@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "messages": {
+    "hello": {
+      "type": "hello",
+      "protocol": 1,
+      "controller": "1.0.0"
+    },
+    "mode": {
+      "type": "mode",
+      "mode": "welcome|patient|services|game"
+    },
+    "patient": {
+      "type": "patient",
+      "displayName": "سيد أحمد",
+      "doctorName": "د. طاهر"
+    },
+    "image": {
+      "type": "image",
+      "dataUrl": "data:image/png;base64,...",
+      "position": 1,
+      "total": 10
+    },
+    "hide": {
+      "type": "hide",
+      "returnTo": "previous"
+    },
+    "zoom": {
+      "type": "zoom",
+      "delta": 0.15
+    },
+    "pan": {
+      "type": "pan",
+      "dx": 60,
+      "dy": 0
+    },
+    "resetView": {
+      "type": "resetView"
+    },
+    "ping": {
+      "type": "ping",
+      "sentAt": 0
+    }
+  }
+}
