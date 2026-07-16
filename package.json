@@ -1,7 +1,7 @@
 {
   "name": "dental-chain-chair-controller",
-  "version": "1.4.0-alpha3",
-  "description": "Dental Chain Chair Controller Alpha 3",
+  "version": "1.7.0-alpha5",
+  "description": "Dental Chain Chair Controller Alpha 5",
   "main": "src/main/main.js",
   "private": true,
   "author": "Dental Chain | Dr. Taher",
@@ -9,14 +9,15 @@
   "scripts": {
     "start": "electron .",
     "check": "node --check src/main/main.js && node --check src/main/server.js && node --check src/main/discovery.js && node --check src/main/image-library.js && node --check src/main/settings-store.js && node --check src/main/preload.js && node --check src/renderer/app.js",
-    "dist:win": "electron-builder --win nsis portable --x64 --publish=never"
+    "dist:win": "electron-builder --win nsis portable --x64"
   },
   "dependencies": {
     "chokidar": "^4.0.3",
     "express": "^5.1.0",
     "mime-types": "^3.0.1",
     "sharp": "^0.34.3",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "electron": "^37.2.6",

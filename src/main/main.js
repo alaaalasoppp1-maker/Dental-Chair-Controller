@@ -1,5 +1,6 @@
 "use strict";
 const path=require("path");
+const QRCode=require("qrcode");
 const {
   app,BrowserWindow,dialog,globalShortcut,ipcMain,Tray,Menu,nativeImage
 }=require("electron");
@@ -41,86 +42,98 @@ function showHome(){server.send({type:"home"},false);setDisplay({mode:"home",ima
 function showBlack(){server.send({type:"black"},false);setDisplay({mode:"black",imageVisible:false});disableViewerKeys();}
 function hide(){server.send({type:"hide"},false);setDisplay({imageVisible:false});disableViewerKeys();}
 
-function enableViewerKeys(){
-  disableViewerKeys();
-  const map=[
-    ["Escape",hide],["Left",()=>showImageItem(images.previous())],["Right",()=>showImageItem(images.next())],
-    ["Up",()=>server.send({type:"transform",dx:0,dy:-70},false)],
-    ["Down",()=>server.send({type:"transform",dx:0,dy:70},false)],
-    ["+",()=>server.send({type:"transform",zoom:0.15},false)],
-    ["-",()=>server.send({type:"transform",zoom:-0.15},false)],
-    ["0",()=>server.send({type:"reset_view"},false)]
-  ];
-  for(const [k,fn] of map){try{globalShortcut.register(k,fn);}catch{}}
-}
-function disableViewerKeys(){
-  for(const k of ["Escape","Left","Right","Up","Down","+","-","0"]){try{globalShortcut.unregister(k);}catch{}}
-}
-
 
 function decodeBase64UrlUtf8(value){
   try{
-    let base64=String(value||"").replace(/-/g,"+").replace(/_/g,"/");
-    while(base64.length%4)base64+="=";
-    return Buffer.from(base64,"base64").toString("utf8");
-  }catch{return ""}
+    let s=String(value||"").replace(/-/g,"+").replace(/_/g,"/");
+    while(s.length%4)s+="=";
+    return Buffer.from(s,"base64").toString("utf8");
+  }catch{return""}
 }
-
-function handleProtocolUrl(rawUrl){
+function findProtocolUrl(argv){
+  return (argv||[]).find(v=>String(v).startsWith("dentalchair://"))||null;
+}
+function pad2(v){return String(v).padStart(2,"0")}
+function localIcsDate(d){return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}T${pad2(d.getHours())}${pad2(d.getMinutes())}00`}
+function icsEscape(v){return String(v??"").replace(/\\/g,"\\\\").replace(/\n/g,"\\n").replace(/,/g,"\\,").replace(/;/g,"\\;")}
+function buildAppointmentIcs(data){
+  if(data?.ics)return String(data.ics);
+  const [y,mo,d]=String(data?.date||"").split("-").map(Number);
+  const [h,mi]=String(data?.time||"").split(":").map(Number);
+  if(!y||!mo||!d)throw new Error("تاريخ الموعد غير صالح");
+  const start=new Date(y,mo-1,d,h||0,mi||0,0),end=new Date(start.getTime()+3600000);
+  const clinic=String(data?.clinicName||"عيادة د. طاهر"),patient=String(data?.patientName||""),doctor=String(data?.doctorName||""),type=String(data?.type||"موعد أسنان");
+  const description=[patient?`المريض: ${patient}`:"",doctor?`الطبيب: ${doctor}`:"",data?.notes?`ملاحظات: ${data.notes}`:"","يرجى الحضور قبل الموعد بـ 10 دقائق."].filter(Boolean).join("\\n");
+  return ["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Dental Chain//Appointment//AR","CALSCALE:GREGORIAN","METHOD:PUBLISH","BEGIN:VEVENT",`UID:${Date.now()}@dentalchain.local`,`DTSTAMP:${localIcsDate(new Date())}`,`DTSTART:${localIcsDate(start)}`,`DTEND:${localIcsDate(end)}`,`SUMMARY:${icsEscape(`${type} - ${clinic}`)}`,`DESCRIPTION:${icsEscape(description)}`,`LOCATION:${icsEscape(data?.location||clinic)}`,"BEGIN:VALARM","TRIGGER:-PT24H","ACTION:DISPLAY",`DESCRIPTION:${icsEscape(`تذكير بموعدك في ${clinic}`)}`,"END:VALARM","END:VEVENT","END:VCALENDAR"].join("\\r\\n");
+}
+async function showAppointmentQr(data){
+  const ics=buildAppointmentIcs(data||{});
+  const payload=`data:text/calendar;charset=utf-8,${encodeURIComponent(ics)}`;
+  const qrDataUrl=await QRCode.toDataURL(payload,{errorCorrectionLevel:"M",width:760,margin:2,color:{dark:"#082f49",light:"#ffffff"}});
+  server.send({type:"appointment_qr",qrDataUrl,patientName:String(data?.patientName||""),date:String(data?.date||""),time:String(data?.time||""),clinicName:String(data?.clinicName||"عيادة د. طاهر"),reminderHours:24});
+  setDisplay({mode:"appointment_qr",imageVisible:false});disableViewerKeys();notice("تم عرض QR الموعد على الشاشة","success");return true;
+}
+function handleProtocolUrl(raw){
   try{
-    const url=new URL(String(rawUrl||""));
-    if(url.protocol!=="dentalchair:")return false;
-    const encoded=url.searchParams.get("data")||"";
-    const decoded=decodeBase64UrlUtf8(encoded);
-    const payload=JSON.parse(decoded||"{}");
-
+    const url=new URL(String(raw||""));if(url.protocol!=="dentalchair:")return false;
+    const payload=JSON.parse(decodeBase64UrlUtf8(url.searchParams.get("data")||"")||"{}");
     if(payload.action==="show_patient"){
-      const displayName=String(payload.displayName||payload.fullName||"ضيفنا الكريم").trim();
-      const doctorName=String(payload.doctorName||"").trim();
-      server?.send({type:"patient",displayName,doctorName});
-      setDisplay({mode:"patient",imageVisible:false});
-      disableViewerKeys();
-      notice(`تم إرسال المريض إلى الشاشة: ${displayName}`,"success");
-      if(win){win.show();win.focus();}
-      return true;
+      const fullName=String(payload.fullName||payload.displayName||"ضيفنا الكريم").trim();
+      const displayName=String(payload.firstName||payload.displayName||fullName.split(/\s+/)[0]||"ضيفنا الكريم").trim();
+      const doctorName=String(payload.doctorName||"").trim(),clinicName=String(payload.clinicName||settings?.get("clinicName")||"عيادة د. طاهر").trim();
+      server?.send({type:"patient",displayName,fullName,doctorName,clinicName});
+      setDisplay({mode:"patient",imageVisible:false});disableViewerKeys();notice(`تم إرسال المريض إلى الشاشة: ${displayName}`,"success");if(win){win.show();win.focus()}return true;
     }
-  }catch(error){
-    notice(`تعذر قراءة أمر شاشة الكرسي: ${error.message}`,"error");
-  }
+    if(payload.action==="show_appointment_qr"){
+      showAppointmentQr(payload).catch(e=>notice(`تعذر إنشاء QR: ${e.message}`,"error"));if(win){win.show();win.focus()}return true;
+    }
+  }catch(e){notice(`تعذر قراءة أمر شاشة الكرسي: ${e.message}`,"error")}
   return false;
 }
 
-function findProtocolUrl(argv){
-  return (argv||[]).find(arg=>String(arg).startsWith("dentalchair://"))||null;
+function safeRegister(accelerator,handler){
+  try{
+    globalShortcut.unregister(accelerator);
+    globalShortcut.register(accelerator,()=>{
+      try{handler();}catch(error){notice(`تعذر تنفيذ الاختصار: ${error.message}`,"error");}
+    });
+  }catch{}
 }
-
-
-function treatmentList(){
-  const list=settings.get("treatments");
-  return Array.isArray(list)?list:[];
+function enableViewerKeys(){
+  disableViewerKeys();
+  const moves=[
+    ["CommandOrControl+Left",()=>server.send({type:"transform",dx:-70,dy:0},false)],
+    ["CommandOrControl+Right",()=>server.send({type:"transform",dx:70,dy:0},false)],
+    ["CommandOrControl+Up",()=>server.send({type:"transform",dx:0,dy:-70},false)],
+    ["CommandOrControl+Down",()=>server.send({type:"transform",dx:0,dy:70},false)],
+    ["CommandOrControl+=",()=>server.send({type:"transform",zoom:0.15},false)],
+    ["CommandOrControl+-",()=>server.send({type:"transform",zoom:-0.15},false)],
+    ["CommandOrControl+0",()=>server.send({type:"reset_view"},false)],
+    ["CommandOrControl+Shift+8",()=>server.send({type:"transform",rotate:20},false)],
+    ["CommandOrControl+PageUp",()=>showImageItem(images.previous())],
+    ["CommandOrControl+PageDown",()=>showImageItem(images.next())],
+    ["CommandOrControl+Escape",hide]
+  ];
+  moves.forEach(([key,handler])=>safeRegister(key,handler));
 }
-function treatmentById(id){
-  return treatmentList().find(item=>String(item.id)===String(id))||null;
+function disableViewerKeys(){
+  [
+    "CommandOrControl+Left","CommandOrControl+Right","CommandOrControl+Up","CommandOrControl+Down",
+    "CommandOrControl+=","CommandOrControl+-","CommandOrControl+0","CommandOrControl+Shift+8",
+    "CommandOrControl+PageUp","CommandOrControl+PageDown","CommandOrControl+Escape"
+  ].forEach(key=>{try{globalShortcut.unregister(key);}catch{}});
 }
-function normalizeTreatment(item){
-  return {
-    id:String(item?.id||Date.now()),
-    name:String(item?.name||"").trim(),
-    filePath:String(item?.filePath||"").trim()
-  };
-}
-
 function registerGlobalKeys(){
   globalShortcut.unregisterAll();
-  globalShortcut.register("CommandOrControl+`",()=>showImageItem(images.latest()));
-  globalShortcut.register("F1",showHome);
-  globalShortcut.register("F2",()=>server.send({type:"services"},false));
-  globalShortcut.register("F4",()=>chooseFile([{name:"Images",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff"]}],"image",true));
-  globalShortcut.register("F5",showBlack);
-  globalShortcut.register("G",()=>{ if(win){win.show();win.focus();win.webContents.send("ui:open-treatments");} });
-  globalShortcut.register("V",()=>chooseFile([{name:"Video",extensions:["mp4","webm","mkv"]}],"video",false));
-  globalShortcut.register("P",()=>chooseFile([{name:"PDF",extensions:["pdf"]}],"pdf",false));
-  globalShortcut.register("F6",()=>server.send({type:"game"},false));
+  safeRegister("CommandOrControl+`",()=>showImageItem(images.latest()));
+  safeRegister("CommandOrControl+H",showHome);
+  safeRegister("CommandOrControl+B",showBlack);
+  safeRegister("CommandOrControl+I",()=>chooseFile([{name:"Images",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff"]}],"image",true));
+  safeRegister("CommandOrControl+G",()=>{if(win){win.show();win.focus();win.webContents.send("ui:open-treatments");}});
+  safeRegister("CommandOrControl+V",()=>chooseFile([{name:"Video",extensions:["mp4","webm","mkv"]}],"video",false));
+  safeRegister("CommandOrControl+P",()=>chooseFile([{name:"PDF",extensions:["pdf"]}],"pdf",false));
+  safeRegister("CommandOrControl+L",()=>server.send({type:"game"},false));
+  safeRegister("CommandOrControl+Escape",hide);
 }
 
 function createWindow(){
@@ -178,6 +191,7 @@ function ipc(){
   ipcMain.handle("display:hide",hide);
   ipcMain.handle("display:transform",(_e,p)=>server.send({type:"transform",...p},false));
   ipcMain.handle("display:reset",()=>server.send({type:"reset_view"},false));
+  ipcMain.handle("display:rotate",()=>server.send({type:"transform",rotate:20},false));
   
   ipcMain.handle("treatments:choose-gif",async()=>{
     const result=await dialog.showOpenDialog(win,{
@@ -221,6 +235,10 @@ function ipc(){
     disableViewerKeys();
     return true;
   });
+    ipcMain.handle("appointment:show-qr",async(_e,data)=>{
+    return await showAppointmentQr(data||{});
+  });
+
   ipcMain.handle("display:game",()=>{
     server.send({type:"game"},false);
     setDisplay({mode:"game",imageVisible:false});

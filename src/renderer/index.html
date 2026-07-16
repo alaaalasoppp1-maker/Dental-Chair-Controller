@@ -45,6 +45,7 @@
       <kbd>+ / −</kbd><span>تكبير وتصغير</span>
       <kbd>↑ ↓ ← →</kbd><span>تحريك الصورة</span>
       <kbd>0</kbd><span>الحجم الطبيعي</span>
+      <kbd>Ctrl + *</kbd><span>تدوير الصورة 20°</span>
       <kbd>F1</kbd><span>شاشة الترحيب</span>
       <kbd>F2</kbd><span>خدمات العيادة</span>
       <kbd>F4</kbd><span>بانوراما / صورة مؤقتة</span>
@@ -73,7 +74,7 @@
   <header class="hero">
     <div class="brand">
       <img src="../../assets/app-icon.png" alt="">
-      <div><small>DENTAL CHAIN | DR. TAHER</small><h1>وحدة تحكم شاشة الكرسي</h1><p>Modern Technology • Precise Care • Continuous Follow-Up</p></div>
+      <div><small>DENTAL CHAIN | DR. TAHER</small><h1>وحدة تحكم شاشة الكرسي</h1><p>Modern Technology • Precise Care • Continuous Follow-Up<br><small class="build-version">ALPHA 5 • BUILD 1.7.0</small></p></div>
     </div>
     <div id="badge" class="badge waiting"><i></i><span>بانتظار الشاشة</span></div>
   </header>
@@ -102,37 +103,41 @@
   </section>
 
   <section class="card">
-    <div class="head"><div><h2>العرض السريع</h2><p>الوظائف المستخدمة يوميًا فقط.</p></div></div>
-
+    <div class="head"><div><h2>العرض السريع</h2><p>الوظائف الرئيسية ولوحة تحكم الصورة.</p></div></div>
     <div class="primary-actions">
       <button class="primary huge" id="latest">أحدث صورة SOPRO</button>
       <button class="danger huge" id="hide">إغلاق العرض</button>
     </div>
-
-    <details class="tool-group" open>
-      <summary>ملفات وعروض إضافية</summary>
-      <div class="file-actions">
-        <button id="temp">بانوراما / صورة مؤقتة</button>
-        <button id="gif">عرض GIF</button>
-        <button id="video">عرض فيديو</button>
-        <button id="pdf">عرض PDF</button>
+    <div class="media-actions">
+      <button id="temp">بانوراما / صورة مؤقتة</button>
+      <button id="gif">عرض GIF</button>
+      <button id="video">عرض فيديو</button>
+      <button id="pdf">عرض PDF</button>
+    </div>
+    <div class="viewer-controller">
+      <div class="controller-title"><b>Image Controller</b><small>Ctrl + الأسهم للتحريك</small></div>
+      <div class="dpad">
+        <span></span><button id="up">↑</button><span></span>
+        <button id="left">←</button><button id="reset">●</button><button id="right">→</button>
+        <span></span><button id="down">↓</button><span></span>
       </div>
-    </details>
+      <div class="zoom-pad"><button id="zoomIn">＋</button><button id="zoomOut">−</button><button id="rotateImage" class="rotate-btn">↻<small>Ctrl + *</small></button></div>
+      <div class="image-nav"><button id="prev">السابق<br><small>Ctrl + PageUp</small></button><button id="next">التالي<br><small>Ctrl + PageDown</small></button></div>
+    </div>
+  </section>
 
-    <details class="tool-group">
-      <summary>تحكم الصورة</summary>
-      <div class="image-pad">
-        <button id="zoomIn">+</button>
-        <button id="zoomOut">−</button>
-        <button id="left">←</button>
-        <button id="right">→</button>
-        <button id="up">↑</button>
-        <button id="down">↓</button>
-        <button id="reset">طبيعي</button>
-        <button id="prev">السابق</button>
-        <button id="next">التالي</button>
-      </div>
-    </details>
+  
+  <section class="card">
+    <div class="head"><div><h2>QR الموعد — وضع احتياطي</h2><p>الاستخدام الطبيعي تلقائي من برنامج العيادة؛ هذه اللوحة للحالات الطارئة.</p></div></div>
+    <div class="appointment-grid">
+      <input id="qrPatient" placeholder="اسم المريض">
+      <input id="qrDoctor" placeholder="اسم الطبيب">
+      <input id="qrDate" type="date">
+      <input id="qrTime" type="time">
+      <input id="qrType" placeholder="نوع الموعد" value="موعد أسنان">
+      <input id="qrClinic" placeholder="اسم العيادة" value="عيادة د. طاهر">
+      <button class="primary" id="showQr">إظهار QR على الشاشة</button>
+    </div>
   </section>
 
   <section id="treatmentsSection" class="card">

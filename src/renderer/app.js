@@ -64,3 +64,19 @@ $("displayTheme").onchange=()=>chairAPI.setDisplayTheme($("displayTheme").value)
 $("save").onclick=()=>chairAPI.saveSettings({doctorName:$("doctor").value,displayTheme:$("displayTheme").value,launchAtLogin:$("launch").checked,startMinimized:$("minimized").checked}).then(()=>note({message:"تم حفظ الإعدادات",type:"success"}));
 
 chairAPI.onState(render);chairAPI.onNotice(note);chairAPI.getState().then(render);
+
+$("showQr").onclick=async()=>{
+  try{
+    await chairAPI.showAppointmentQr({
+      patientName:$("qrPatient").value,
+      doctorName:$("qrDoctor").value,
+      date:$("qrDate").value,
+      time:$("qrTime").value,
+      type:$("qrType").value,
+      clinicName:$("qrClinic").value
+    });
+    note({message:"تم عرض QR الموعد",type:"success"});
+  }catch(error){note({message:error.message||"تعذر إنشاء QR",type:"error"})}
+};
+
+$("rotateImage").onclick=()=>chairAPI.rotateImage();
