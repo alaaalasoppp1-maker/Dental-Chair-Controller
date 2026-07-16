@@ -1,0 +1,71 @@
+{
+  "name": "dental-chain-chair-controller",
+  "version": "1.6.0-final-test",
+  "description": "Dental Chain Chair Controller Alpha 4",
+  "main": "src/main/main.js",
+  "private": true,
+  "author": "Dental Chain | Dr. Taher",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check src/main/main.js && node --check src/main/server.js && node --check src/main/discovery.js && node --check src/main/image-library.js && node --check src/main/settings-store.js && node --check src/main/preload.js && node --check src/renderer/app.js",
+    "dist:win": "electron-builder --win nsis portable --x64"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "express": "^5.1.0",
+    "mime-types": "^3.0.1",
+    "sharp": "^0.34.3",
+    "ws": "^8.18.3",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.dentalchain.chaircontroller",
+    "productName": "Dental Chain Chair Controller",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/app-icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "protocols": [
+      {
+        "name": "Dental Chain Chair Command",
+        "schemes": [
+          "dentalchair"
+        ]
+      }
+    ]
+  }
+}
