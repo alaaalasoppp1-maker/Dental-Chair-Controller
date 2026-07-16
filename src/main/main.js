@@ -94,6 +94,22 @@ function findProtocolUrl(argv){
   return (argv||[]).find(arg=>String(arg).startsWith("dentalchair://"))||null;
 }
 
+
+function treatmentList(){
+  const list=settings.get("treatments");
+  return Array.isArray(list)?list:[];
+}
+function treatmentById(id){
+  return treatmentList().find(item=>String(item.id)===String(id))||null;
+}
+function normalizeTreatment(item){
+  return {
+    id:String(item?.id||Date.now()),
+    name:String(item?.name||"").trim(),
+    filePath:String(item?.filePath||"").trim()
+  };
+}
+
 function registerGlobalKeys(){
   globalShortcut.unregisterAll();
   globalShortcut.register("CommandOrControl+`",()=>showImageItem(images.latest()));
@@ -101,6 +117,10 @@ function registerGlobalKeys(){
   globalShortcut.register("F2",()=>server.send({type:"services"},false));
   globalShortcut.register("F4",()=>chooseFile([{name:"Images",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff"]}],"image",true));
   globalShortcut.register("F5",showBlack);
+  globalShortcut.register("G",()=>{ if(win){win.show();win.focus();win.webContents.send("ui:open-treatments");} });
+  globalShortcut.register("V",()=>chooseFile([{name:"Video",extensions:["mp4","webm","mkv"]}],"video",false));
+  globalShortcut.register("P",()=>chooseFile([{name:"PDF",extensions:["pdf"]}],"pdf",false));
+  globalShortcut.register("F6",()=>server.send({type:"game"},false));
 }
 
 function createWindow(){
@@ -116,7 +136,10 @@ function createWindow(){
 }
 
 function createTray(){
-  tray=new Tray(nativeImage.createEmpty());
+  const iconPath=path.join(__dirname,"..","..","assets","app-icon.png");
+  let trayImage=nativeImage.createFromPath(iconPath);
+  if(!trayImage.isEmpty())trayImage=trayImage.resize({width:20,height:20});
+  tray=new Tray(trayImage.isEmpty()?nativeImage.createEmpty():trayImage);
   tray.setToolTip("Dental Chain Chair Controller");
   tray.setContextMenu(Menu.buildFromTemplate([
     {label:"فتح",click:()=>{win.show();win.focus();}},
@@ -155,6 +178,65 @@ function ipc(){
   ipcMain.handle("display:hide",hide);
   ipcMain.handle("display:transform",(_e,p)=>server.send({type:"transform",...p},false));
   ipcMain.handle("display:reset",()=>server.send({type:"reset_view"},false));
+  
+  ipcMain.handle("treatments:choose-gif",async()=>{
+    const result=await dialog.showOpenDialog(win,{
+      title:"اختر GIF المعالجة",
+      properties:["openFile"],
+      filters:[{name:"Animated Media",extensions:["gif","webp"]}]
+    });
+    return result.canceled?"":(result.filePaths[0]||"");
+  });
+  ipcMain.handle("treatments:save",(_e,item)=>{
+    const normalized=normalizeTreatment(item);
+    if(!normalized.name||!normalized.filePath){
+      throw new Error("اسم المعالجة وملف GIF مطلوبان");
+    }
+    const list=treatmentList();
+    const index=list.findIndex(x=>String(x.id)===normalized.id);
+    if(index>=0)list[index]=normalized;else list.push(normalized);
+    settings.patch({treatments:list});
+    state.settings=settings.all();
+    emit();
+    return normalized;
+  });
+  ipcMain.handle("treatments:delete",(_e,id)=>{
+    const list=treatmentList().filter(x=>String(x.id)!==String(id));
+    settings.patch({treatments:list});
+    state.settings=settings.all();
+    emit();
+    return true;
+  });
+  ipcMain.handle("treatments:play",(_e,id)=>{
+    const item=treatmentById(id);
+    if(!item)return false;
+    const url=server.registerMedia(item.filePath,false);
+    server.send({
+      type:"treatment_gif",
+      id:item.id,
+      name:item.name,
+      url
+    });
+    setDisplay({mode:"treatment_gif",imageVisible:false});
+    disableViewerKeys();
+    return true;
+  });
+  ipcMain.handle("display:game",()=>{
+    server.send({type:"game"},false);
+    setDisplay({mode:"game",imageVisible:false});
+    disableViewerKeys();
+    return true;
+  });
+
+  ipcMain.handle("display:theme",(_e,theme)=>{
+    const normalized=["light","dark","auto"].includes(String(theme))?String(theme):"dark";
+    settings.patch({displayTheme:normalized});
+    state.settings=settings.all();
+    server.send({type:"theme",theme:normalized},false);
+    emit();
+    notice(`تم تطبيق مظهر الشاشة: ${normalized}`,"success");
+    return state;
+  });
   ipcMain.handle("settings:save",(_e,p)=>{
     settings.patch(p||{});state.settings=settings.all();
     app.setLoginItemSettings({openAtLogin:Boolean(settings.get("launchAtLogin"))});emit();return state;
@@ -203,8 +285,25 @@ app.whenReady().then(async()=>{
     port:settings.get("discoveryPort"),wsPort:settings.get("wsPort"),clinicName:settings.get("clinicName"),onNotice:notice
   });
   ipc();createWindow();createTray();
-  await server.start();discovery.start();await images.watch(settings.get("sensorFolder"));
+  try{
+    await server.start();
+  }catch(error){
+    if(error?.code==="EADDRINUSE"){
+      dialog.showMessageBoxSync({
+        type:"info",
+        title:"Dental Chain Chair Controller",
+        message:"وحدة التحكم تعمل بالفعل",
+        detail:"تم العثور على نسخة أخرى تعمل في الخلفية. افتحها من الأيقونة بجانب الساعة."
+      });
+      quitting=true;
+      app.quit();
+      return;
+    }
+    throw error;
+  }
+  discovery.start();await images.watch(settings.get("sensorFolder"));
   registerGlobalKeys();
+  server.send({type:"theme",theme:settings.get("displayTheme")||"dark"},false);
   if(pendingProtocolUrl){handleProtocolUrl(pendingProtocolUrl);pendingProtocolUrl=null;}
   app.setLoginItemSettings({openAtLogin:Boolean(settings.get("launchAtLogin"))});
   emit();

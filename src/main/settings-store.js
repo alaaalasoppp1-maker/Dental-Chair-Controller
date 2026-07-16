@@ -15,7 +15,11 @@ class SettingsStore {
       wsPort: 8765,
       discoveryPort: 8766,
       mediaMaxWidth: 1280,
-      mediaMaxHeight: 1024
+      mediaMaxHeight: 1024,
+      displayTheme: "dark",
+      lastDisplayUrl: "",
+      treatments: [],
+      treatmentColumns: 3
     };
     this.data = this.load();
   }

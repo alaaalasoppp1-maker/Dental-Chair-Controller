@@ -17,6 +17,13 @@ contextBridge.exposeInMainWorld("chairAPI",{
   hide:()=>ipcRenderer.invoke("display:hide"),
   transform:p=>ipcRenderer.invoke("display:transform",p),
   resetView:()=>ipcRenderer.invoke("display:reset"),
+  setDisplayTheme:theme=>ipcRenderer.invoke("display:theme",theme),
+
+  chooseTreatmentGif:()=>ipcRenderer.invoke("treatments:choose-gif"),
+  saveTreatment:item=>ipcRenderer.invoke("treatments:save",item),
+  deleteTreatment:id=>ipcRenderer.invoke("treatments:delete",id),
+  playTreatment:id=>ipcRenderer.invoke("treatments:play",id),
+  startGame:()=>ipcRenderer.invoke("display:game"),
   saveSettings:p=>ipcRenderer.invoke("settings:save",p),
   onState:cb=>ipcRenderer.on("state:changed",(_e,s)=>cb(s)),
   onNotice:cb=>ipcRenderer.on("notice",(_e,n)=>cb(n))

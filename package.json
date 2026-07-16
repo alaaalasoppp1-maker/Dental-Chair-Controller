@@ -1,7 +1,7 @@
 {
   "name": "dental-chain-chair-controller",
-  "version": "1.2.0-alpha1",
-  "description": "Dental Chain Chair Controller Alpha 1",
+  "version": "1.4.0-alpha3",
+  "description": "Dental Chain Chair Controller Alpha 3",
   "main": "src/main/main.js",
   "private": true,
   "author": "Dental Chain | Dr. Taher",
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "check": "node --check src/main/main.js && node --check src/main/server.js && node --check src/main/discovery.js && node --check src/main/image-library.js && node --check src/main/settings-store.js && node --check src/main/preload.js && node --check src/renderer/app.js",
-    "dist:win": "electron-builder --win nsis portable --x64 --publish=never"
+    "dist:win": "electron-builder --win nsis portable --x64 --publish never"
   },
   "dependencies": {
     "chokidar": "^4.0.3",
@@ -31,17 +31,11 @@
     },
     "files": [
       "src/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "asar": true,
-    "protocols": [
-      {
-        "name": "Dental Chain Chair Command",
-        "schemes": [
-          "dentalchair"
-        ]
-      }
-    ],
+    "publish": "never",
     "win": {
       "target": [
         {
@@ -56,14 +50,22 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "icon": "assets/app-icon.png"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Dental Chain Chair Controller"
-    }
+      "createStartMenuShortcut": true
+    },
+    "protocols": [
+      {
+        "name": "Dental Chain Chair Command",
+        "schemes": [
+          "dentalchair"
+        ]
+      }
+    ]
   }
 }
