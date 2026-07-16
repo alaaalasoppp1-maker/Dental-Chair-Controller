@@ -1,17 +1,21 @@
+"use strict";
 const fs = require("fs");
 const path = require("path");
 
 class SettingsStore {
   constructor(app) {
-    this.file = path.join(app.getPath("userData"), "chair-controller-settings.json");
+    this.file = path.join(app.getPath("userData"), "settings.json");
     this.defaults = {
       sensorFolder: "C:\\Users\\Public\\Documents\\Images SOPRO-Imaging",
-      port: 8765,
-      startMinimized: false,
-      launchAtLogin: false,
       clinicName: "عيادة د. طاهر",
       chainName: "Dental Chain | Dr. Taher",
-      doctorName: "د. طاهر"
+      doctorName: "د. طاهر",
+      launchAtLogin: false,
+      startMinimized: false,
+      wsPort: 8765,
+      discoveryPort: 8766,
+      mediaMaxWidth: 1280,
+      mediaMaxHeight: 1024
     };
     this.data = this.load();
   }
@@ -19,35 +23,17 @@ class SettingsStore {
   load() {
     try {
       if (!fs.existsSync(this.file)) return {...this.defaults};
-      const parsed = JSON.parse(fs.readFileSync(this.file, "utf8"));
-      return {...this.defaults, ...parsed};
+      return {...this.defaults, ...JSON.parse(fs.readFileSync(this.file, "utf8"))};
     } catch {
       return {...this.defaults};
     }
   }
-
-  get(key) {
-    return this.data[key];
-  }
-
-  all() {
-    return {...this.data};
-  }
-
-  set(key, value) {
-    this.data[key] = value;
-    this.save();
-  }
-
+  all() { return {...this.data}; }
+  get(key) { return this.data[key]; }
   patch(values) {
     this.data = {...this.data, ...values};
-    this.save();
-  }
-
-  save() {
-    fs.mkdirSync(path.dirname(this.file), {recursive: true});
+    fs.mkdirSync(path.dirname(this.file), {recursive:true});
     fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2), "utf8");
   }
 }
-
 module.exports = {SettingsStore};

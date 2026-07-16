@@ -1,121 +1,29 @@
 <!doctype html>
-<html lang="ar" dir="rtl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Dental Chain Chair Controller</title>
-  <link rel="stylesheet" href="styles.css">
-</head>
-<body>
-  <main class="shell">
-    <header class="hero">
-      <div>
-        <div class="eyebrow">DENTAL CHAIN | DR. TAHER</div>
-        <h1>Chair Controller</h1>
-        <p>وحدة التحكم المحلية بشاشة كرسي العيادة وصور SOPRO</p>
-      </div>
-      <div id="screenBadge" class="badge offline"><span></span><b>بانتظار الشاشة</b></div>
-    </header>
+<html lang="ar" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dental Chain Chair Controller</title><link rel="stylesheet" href="styles.css">
+</head><body><main class="shell">
+<header class="hero"><div><small>DENTAL CHAIN | DR. TAHER</small><h1>Chair Controller Alpha 1</h1><p>كل التحكم من اللابتوب — دون لمس شاشة الكرسي.</p></div><div id="badge" class="badge">بانتظار الشاشة</div></header>
 
-    <section class="status-grid">
-      <article class="metric">
-        <small>الشاشات المتصلة</small>
-        <strong id="clientCount">0</strong>
-      </article>
-      <article class="metric">
-        <small>الصور المفهرسة</small>
-        <strong id="imageCount">0</strong>
-      </article>
-      <article class="metric">
-        <small>الصورة الحالية</small>
-        <strong id="imagePosition">—</strong>
-      </article>
-      <article class="metric">
-        <small>الوضع الحالي</small>
-        <strong id="displayMode">ترحيب</strong>
-      </article>
-    </section>
+<section class="stats">
+<div><span>الشاشات</span><b id="clients">0</b></div><div><span>الصور</span><b id="count">0</b></div>
+<div><span>الحالية</span><b id="position">—</b></div><div><span>الوضع</span><b id="mode">ترحيب</b></div>
+</section>
 
-    <section class="card">
-      <div class="card-title">
-        <div><h2>اتصال شاشة الكرسي</h2><p>يفتح الـAPK اتصالًا بهذا العنوان ضمن نفس الراوتر.</p></div>
-      </div>
-      <div id="networkUrl" class="code-line">ws://—:8765</div>
-    </section>
+<section class="card"><div class="head"><div><h2>الاتصال التلقائي</h2><p>الـAPK يكتشف هذا الكمبيوتر تلقائيًا ضمن نفس الشبكة.</p></div></div><div id="url" class="code">—</div></section>
 
-    <section class="card">
-      <div class="card-title">
-        <div><h2>مجلد صور SOPRO</h2><p>تتم فهرسة جميع المجلدات الفرعية تلقائيًا.</p></div>
-        <div class="actions">
-          <button id="chooseFolder">اختيار المجلد</button>
-          <button id="reindex">إعادة فهرسة</button>
-        </div>
-      </div>
-      <div id="sensorFolder" class="code-line ltr">غير محدد</div>
-      <div class="current-file">
-        <span>آخر صورة محددة</span>
-        <b id="currentImage">—</b>
-      </div>
-    </section>
+<section class="card"><div class="head"><div><h2>مجلد SOPRO</h2><p>فهرسة ومراقبة جميع المجلدات الفرعية.</p></div><div><button id="folderBtn">اختيار</button><button id="reindex">إعادة فهرسة</button></div></div><div id="folder" class="code ltr">—</div><p class="current">الحالية: <b id="current">—</b></p></section>
 
-    <section class="card">
-      <div class="card-title">
-        <div><h2>التحكم بصور الأشعة</h2><p>لا يوجد عرض تلقائي؛ الطبيب يقرر متى تظهر الصورة.</p></div>
-      </div>
-      <div class="button-grid image-controls">
-        <button id="latest" class="primary">عرض أحدث صورة</button>
-        <button id="hideImage" class="danger">إغلاق الصورة</button>
-        <button id="previous">الصورة السابقة</button>
-        <button id="next">الصورة التالية</button>
-        <button id="zoomIn">تكبير +</button>
-        <button id="zoomOut">تصغير −</button>
-        <button id="panLeft">تحريك يسار</button>
-        <button id="panRight">تحريك يمين</button>
-        <button id="panUp">تحريك أعلى</button>
-        <button id="panDown">تحريك أسفل</button>
-        <button id="resetView" class="wide">إعادة ضبط الصورة</button>
-      </div>
-      <div class="shortcut-row">
-        <span><kbd>Ctrl</kbd> + <kbd>` / ذ</kbd> أحدث صورة</span>
-        <span><kbd>← →</kbd> السابق والتالي أثناء العرض</span>
-        <span><kbd>Esc</kbd> إغلاق الصورة</span>
-      </div>
-    </section>
+<section class="card"><h2>العرض السريع</h2><div class="grid">
+<button class="primary" id="latest">أحدث صورة SOPRO</button><button id="prev">السابقة</button><button id="next">التالية</button><button class="danger" id="hide">إغلاق العرض</button>
+<button id="temp">بانوراما / صورة مؤقتة</button><button id="gif">عرض GIF</button><button id="video">عرض فيديو</button><button id="pdf">عرض PDF</button>
+<button id="zoomIn">تكبير +</button><button id="zoomOut">تصغير −</button><button id="left">تحريك يسار</button><button id="right">تحريك يمين</button>
+<button id="up">تحريك أعلى</button><button id="down">تحريك أسفل</button><button id="reset">الحجم الطبيعي</button><button id="black">شاشة سوداء</button>
+</div></section>
 
-    <section class="card">
-      <div class="card-title">
-        <div><h2>جلسة المريض</h2><p>واجهة مؤقتة إلى أن نربطها بزر برنامج إدارة العيادات.</p></div>
-      </div>
-      <div class="patient-row">
-        <input id="patientName" placeholder="مثال: سيد أحمد">
-        <input id="doctorName" placeholder="اسم الطبيب">
-        <button id="showPatient" class="primary">عرض المريض</button>
-      </div>
-      <div class="button-grid modes">
-        <button data-mode="welcome">شاشة الترحيب</button>
-        <button data-mode="services">خدمات العيادة</button>
-        <button data-mode="game">وضع الأطفال</button>
-        <button id="endSession" class="danger">إنهاء الجلسة</button>
-      </div>
-    </section>
+<section class="card"><h2>المريض والجلسة</h2><div class="patient"><input id="patient" placeholder="سيد أحمد"><input id="doctor" placeholder="د. طاهر"><button class="primary" id="showPatient">عرض المريض</button></div><div class="grid compact"><button id="home">الترحيب</button><button id="services">الخدمات</button><button class="danger" id="end">إنهاء الجلسة</button></div></section>
 
-    <section class="card settings-card">
-      <div class="card-title">
-        <div><h2>إعدادات التشغيل</h2></div>
-      </div>
-      <label class="toggle">
-        <input id="launchAtLogin" type="checkbox">
-        <span>تشغيل الكونترولر تلقائيًا مع ويندوز</span>
-      </label>
-      <label class="toggle">
-        <input id="startMinimized" type="checkbox">
-        <span>البدء مصغرًا بجانب الساعة</span>
-      </label>
-      <button id="saveSettings">حفظ الإعدادات</button>
-    </section>
+<section class="card"><h2>إعدادات</h2><label><input id="launch" type="checkbox"> تشغيل مع ويندوز</label><label><input id="minimized" type="checkbox"> بدء مصغرًا</label><button id="save">حفظ</button></section>
 
-    <div id="notice" class="notice"></div>
-  </main>
-  <script src="app.js"></script>
-</body>
-</html>
+<div id="notice" class="notice"></div>
+</main><script src="app.js"></script></body></html>

@@ -1,19 +1,23 @@
-const {contextBridge, ipcRenderer} = require("electron");
-
-contextBridge.exposeInMainWorld("chairAPI", {
-  chooseSensorFolder: () => ipcRenderer.invoke("settings:choose-sensor-folder"),
-  saveSettings: (values) => ipcRenderer.invoke("settings:save", values),
-  getState: () => ipcRenderer.invoke("state:get"),
-  reindex: () => ipcRenderer.invoke("images:reindex"),
-  showLatest: () => ipcRenderer.invoke("images:latest"),
-  showPrevious: () => ipcRenderer.invoke("images:previous"),
-  showNext: () => ipcRenderer.invoke("images:next"),
-  hideImage: () => ipcRenderer.invoke("display:hide-image"),
-  resetView: () => ipcRenderer.invoke("display:reset-view"),
-  transform: (payload) => ipcRenderer.invoke("display:transform", payload),
-  showMode: (mode) => ipcRenderer.invoke("display:mode", mode),
-  showPatient: (payload) => ipcRenderer.invoke("display:patient", payload),
-  endSession: () => ipcRenderer.invoke("display:end-session"),
-  onState: (callback) => ipcRenderer.on("state:changed", (_event, state) => callback(state)),
-  onNotice: (callback) => ipcRenderer.on("notice", (_event, notice) => callback(notice))
+"use strict";
+const {contextBridge,ipcRenderer}=require("electron");
+contextBridge.exposeInMainWorld("chairAPI",{
+  getState:()=>ipcRenderer.invoke("state:get"),
+  chooseSensorFolder:()=>ipcRenderer.invoke("sensor:choose"),
+  reindex:()=>ipcRenderer.invoke("sensor:reindex"),
+  showLatest:()=>ipcRenderer.invoke("image:latest"),
+  showPrevious:()=>ipcRenderer.invoke("image:previous"),
+  showNext:()=>ipcRenderer.invoke("image:next"),
+  chooseTemporaryImage:()=>ipcRenderer.invoke("media:temp-image"),
+  chooseGif:()=>ipcRenderer.invoke("media:gif"),
+  chooseVideo:()=>ipcRenderer.invoke("media:video"),
+  choosePdf:()=>ipcRenderer.invoke("media:pdf"),
+  showPatient:p=>ipcRenderer.invoke("display:patient",p),
+  showHome:()=>ipcRenderer.invoke("display:home"),
+  showBlack:()=>ipcRenderer.invoke("display:black"),
+  hide:()=>ipcRenderer.invoke("display:hide"),
+  transform:p=>ipcRenderer.invoke("display:transform",p),
+  resetView:()=>ipcRenderer.invoke("display:reset"),
+  saveSettings:p=>ipcRenderer.invoke("settings:save",p),
+  onState:cb=>ipcRenderer.on("state:changed",(_e,s)=>cb(s)),
+  onNotice:cb=>ipcRenderer.on("notice",(_e,n)=>cb(n))
 });

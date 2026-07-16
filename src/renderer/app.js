@@ -1,75 +1,21 @@
-const $ = (id) => document.getElementById(id);
-let currentState = null;
-let noticeTimer = null;
-
-const modeLabels = {
-  welcome: "ترحيب",
-  patient: "مريض",
-  services: "الخدمات",
-  game: "الأطفال"
-};
-
-function render(state) {
-  currentState = state;
-  const clients = state.network?.clients || 0;
-  $("clientCount").textContent = String(clients);
-  $("imageCount").textContent = String(state.images?.count || 0);
-  $("imagePosition").textContent = state.images?.count
-    ? `${state.images.currentPosition} / ${state.images.count}`
-    : "—";
-  $("displayMode").textContent = modeLabels[state.display?.mode] || state.display?.mode || "ترحيب";
-  $("networkUrl").textContent = state.network?.url || "ws://—:8765";
-  $("sensorFolder").textContent = state.settings?.sensorFolder || "غير محدد";
-  $("currentImage").textContent = state.images?.currentName || "—";
-  $("doctorName").value = state.settings?.doctorName || "";
-  $("launchAtLogin").checked = Boolean(state.settings?.launchAtLogin);
-  $("startMinimized").checked = Boolean(state.settings?.startMinimized);
-
-  const badge = $("screenBadge");
-  badge.classList.toggle("online", clients > 0);
-  badge.classList.toggle("offline", clients === 0);
-  badge.querySelector("b").textContent = clients > 0 ? `الشاشة متصلة (${clients})` : "بانتظار الشاشة";
+const $=id=>document.getElementById(id);let timer;
+const labels={home:"ترحيب",patient:"مريض",image:"صورة",gif:"GIF",video:"فيديو",pdf:"PDF",black:"أسود",services:"خدمات"};
+function render(s){
+ $("clients").textContent=s.network?.clients||0;$("count").textContent=s.images?.count||0;
+ $("position").textContent=s.images?.count?`${s.images.position}/${s.images.count}`:"—";
+ $("mode").textContent=labels[s.display?.mode]||s.display?.mode||"ترحيب";
+ $("url").textContent=s.network?.wsUrl||"—";$("folder").textContent=s.settings?.sensorFolder||"—";
+ $("current").textContent=s.images?.currentName||"—";$("doctor").value=s.settings?.doctorName||"";
+ $("launch").checked=!!s.settings?.launchAtLogin;$("minimized").checked=!!s.settings?.startMinimized;
+ $("badge").textContent=(s.network?.clients||0)>0?`الشاشة متصلة (${s.network.clients})`:"بانتظار الشاشة";
 }
-
-function showNotice({message, type = "info"}) {
-  const box = $("notice");
-  box.textContent = message;
-  box.className = `notice show ${type}`;
-  clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => box.className = "notice", 3500);
-}
-
-$("chooseFolder").onclick = () => chairAPI.chooseSensorFolder();
-$("reindex").onclick = () => chairAPI.reindex();
-$("latest").onclick = () => chairAPI.showLatest();
-$("previous").onclick = () => chairAPI.showPrevious();
-$("next").onclick = () => chairAPI.showNext();
-$("hideImage").onclick = () => chairAPI.hideImage();
-$("zoomIn").onclick = () => chairAPI.transform({type: "zoom", delta: 0.15});
-$("zoomOut").onclick = () => chairAPI.transform({type: "zoom", delta: -0.15});
-$("panLeft").onclick = () => chairAPI.transform({type: "pan", dx: -70, dy: 0});
-$("panRight").onclick = () => chairAPI.transform({type: "pan", dx: 70, dy: 0});
-$("panUp").onclick = () => chairAPI.transform({type: "pan", dx: 0, dy: -70});
-$("panDown").onclick = () => chairAPI.transform({type: "pan", dx: 0, dy: 70});
-$("resetView").onclick = () => chairAPI.resetView();
-
-$("showPatient").onclick = () => chairAPI.showPatient({
-  displayName: $("patientName").value,
-  doctorName: $("doctorName").value
-});
-
-document.querySelectorAll("[data-mode]").forEach((button) => {
-  button.onclick = () => chairAPI.showMode(button.dataset.mode);
-});
-
-$("endSession").onclick = () => chairAPI.endSession();
-
-$("saveSettings").onclick = () => chairAPI.saveSettings({
-  doctorName: $("doctorName").value.trim(),
-  launchAtLogin: $("launchAtLogin").checked,
-  startMinimized: $("startMinimized").checked
-}).then(() => showNotice({message: "تم حفظ الإعدادات", type: "success"}));
-
-chairAPI.onState(render);
-chairAPI.onNotice(showNotice);
-chairAPI.getState().then(render);
+function note(n){const b=$("notice");b.textContent=n.message;b.className=`notice show ${n.type||""}`;clearTimeout(timer);timer=setTimeout(()=>b.className="notice",3200)}
+$("folderBtn").onclick=()=>chairAPI.chooseSensorFolder();$("reindex").onclick=()=>chairAPI.reindex();
+$("latest").onclick=()=>chairAPI.showLatest();$("prev").onclick=()=>chairAPI.showPrevious();$("next").onclick=()=>chairAPI.showNext();$("hide").onclick=()=>chairAPI.hide();
+$("temp").onclick=()=>chairAPI.chooseTemporaryImage();$("gif").onclick=()=>chairAPI.chooseGif();$("video").onclick=()=>chairAPI.chooseVideo();$("pdf").onclick=()=>chairAPI.choosePdf();
+$("zoomIn").onclick=()=>chairAPI.transform({zoom:.15});$("zoomOut").onclick=()=>chairAPI.transform({zoom:-.15});
+$("left").onclick=()=>chairAPI.transform({dx:-70,dy:0});$("right").onclick=()=>chairAPI.transform({dx:70,dy:0});$("up").onclick=()=>chairAPI.transform({dx:0,dy:-70});$("down").onclick=()=>chairAPI.transform({dx:0,dy:70});$("reset").onclick=()=>chairAPI.resetView();
+$("black").onclick=()=>chairAPI.showBlack();$("home").onclick=()=>chairAPI.showHome();$("services").onclick=()=>chairAPI.transform({type:"services"});$("end").onclick=()=>chairAPI.showHome();
+$("showPatient").onclick=()=>chairAPI.showPatient({displayName:$("patient").value,doctorName:$("doctor").value});
+$("save").onclick=()=>chairAPI.saveSettings({doctorName:$("doctor").value,launchAtLogin:$("launch").checked,startMinimized:$("minimized").checked}).then(()=>note({message:"تم الحفظ",type:"success"}));
+chairAPI.onState(render);chairAPI.onNotice(note);chairAPI.getState().then(render);
