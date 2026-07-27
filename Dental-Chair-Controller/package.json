@@ -1,7 +1,7 @@
 {
   "name": "dental-chain-chair-controller",
-  "version": "2.8.0",
-  "description": "Dental Chain Chair Controller with patient-safe clinical studio and visual treatment storytelling",
+  "version": "2.8.1",
+  "description": "Dental Chain Chair Controller with unified patient archive in Documents",
   "main": "src/main/main.js",
   "private": true,
   "author": "Dental Chain | Dr. Taher",

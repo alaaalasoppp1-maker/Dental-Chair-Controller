@@ -6,10 +6,14 @@ const mime=require("mime-types");
 const crypto=require("crypto");
 
 const IMAGE_EXTENSIONS=new Set([".png",".jpg",".jpeg",".bmp",".webp",".tif",".tiff"]);
-const FOLDERS=["Panorama","Sensor","Other","TreatmentPlans"];
+const FOLDERS=["Panorama","Sensor","Before","After","Intraoral","Photos","Other","TreatmentPlans"];
 const FOLDER_ALIASES={
   Panorama:["01 - صور بانوراما","Panorama"],
   Sensor:["02 - صور أشعة وسينسور","Sensor"],
+  Before:["03 - صور قبل العلاج","Before"],
+  After:["04 - صور بعد العلاج","After"],
+  Intraoral:["05 - صور داخل الفم","Intraoral"],
+  Photos:["06 - صور فوتوغرافية","Photos"],
   Other:["07 - صور أخرى","Other"],
   TreatmentPlans:["TreatmentPlans","08 - خطط العلاج"]
 };
