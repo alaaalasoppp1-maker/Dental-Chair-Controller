@@ -1,0 +1,677 @@
+"use strict";
+const fs=require("fs");
+const path=require("path");
+const mime=require("mime-types");
+const QRCode=require("qrcode");
+const {
+  app,BrowserWindow,dialog,globalShortcut,ipcMain,Tray,Menu,nativeImage,shell
+}=require("electron");
+const {SettingsStore,DEFAULT_SHORTCUTS}=require("./settings-store");
+const {ImageLibrary}=require("./image-library");
+const {ChairServer}=require("./server");
+const {DiscoveryBroadcaster}=require("./discovery");
+const {PatientArchive}=require("./patient-archive");
+const {contextFromCommand,normalizeAssistantSession,normalizeAssistantStage,CONTRACT_NAME,TRANSPORT_PROTOCOL}=require("../shared/clinical-contract");
+
+let win,tray,settings,images,server,discovery,archive,quitting=false,currentMediaPath="";
+let pendingProtocolUrl=null;
+const state={settings:{},images:{},network:{},patient:{selected:false},clinical:{contract:CONTRACT_NAME,protocol:TRANSPORT_PROTOCOL,context:null,lastEventAt:0},display:{mode:"home",imageVisible:false}};
+const clinicalEvents=[];
+
+function emit(){if(win&&!win.isDestroyed())win.webContents.send("state:changed",state);}
+function notice(message,type="info"){if(win&&!win.isDestroyed())win.webContents.send("notice",{message,type,at:Date.now()});}
+function setDisplay(patch){state.display={...state.display,...patch};emit();}
+function pushClinicalEvent(type,data={}){
+  const at=Date.now(),event={eventId:`clinical-${at}-${Math.random().toString(36).slice(2,8)}`,type,at,createdAtMs:at,createdAt:new Date(at).toISOString(),...data};
+  clinicalEvents.push(event);if(clinicalEvents.length>600)clinicalEvents.splice(0,clinicalEvents.length-600);state.clinical={...state.clinical,lastEventAt:at};emit();return event;
+}
+function getClinicalEvents({since=0,patientId=""}={}){return clinicalEvents.filter(event=>Number(event.at)>Number(since||0)&&(!patientId||String(event.patientId||event.fileNo||"")===String(patientId))).map(event=>JSON.parse(JSON.stringify(event)));}
+function selectClinicalPatient(payload={}){
+  let context=contextFromCommand(payload);state.patient=archive?.select(context.patient)||{selected:false};context=archive?.reconcileAssistantContext(context)||context;
+  context.patient={...context.patient,patientId:state.patient.patientId||context.patient.patientId,fileNo:state.patient.fileNo||context.patient.fileNo,fullName:state.patient.fullName||context.patient.fullName,firstName:state.patient.firstName||context.patient.firstName,sessionId:state.patient.sessionId||context.patient.sessionId};
+  state.clinical={...state.clinical,context,planCount:context.plans.length,updatedAt:new Date().toISOString()};
+  archive?.saveAssistantContext(context);server?.setSession(context.patient.sessionId||"");server?.setAssistantContext(context);emit();return context;
+}
+function requireMatchingClinicalPatient(patientId,fileNo=""){
+  const active=archive?.requirePatient(),matches=[active.patientId,active.fileNo].filter(Boolean).some(value=>String(value)===String(patientId||fileNo));
+  if(!matches)throw new Error("جلسة المساعد لا تطابق المريض المفتوح");return active;
+}
+function saveAssistantSession(payload={}){
+  const normalized=normalizeAssistantSession(payload,state.clinical?.context);const active=requireMatchingClinicalPatient(normalized.patientId,normalized.fileNo),saved=archive.saveAssistantSession(normalized),context=state.clinical?.context||{},plan=(context.plans||[]).find(item=>String(item.planId)===String(normalized.planId));
+  if(plan){const completed=new Set(normalized.completedStageIds);for(const stage of plan.stages||[]){if(completed.has(String(stage.stageId))){stage.done=true;stage.status="completed";stage.completedAt=normalized.completedAt}}const done=(plan.stages||[]).filter(stage=>stage.done).length,total=(plan.stages||[]).length;plan.progress=total?Math.round(done*100/total):0;plan.status=done===total&&total?"ready_to_close":"active";plan.updatedAt=normalized.completedAt;archive.saveAssistantContext(context);server?.setAssistantContext(context);}
+  pushClinicalEvent("assistant_session_saved",{patientId:active.patientId,fileNo:active.fileNo,planId:normalized.planId,payload:{sessionId:normalized.sessionId,serviceId:normalized.serviceId,status:normalized.status,completedAt:normalized.completedAt,completedStageIds:normalized.completedStageIds,summary:normalized.summary,doctorName:normalized.doctorName}});
+  notice("تم حفظ جلسة المساعد في ملف المريض","success");return{sessionId:saved.sessionId,planId:saved.planId,archivedAt:saved.archivedAt};
+}
+function saveAssistantStage(payload={}){
+  const normalized=normalizeAssistantStage(payload,state.clinical?.context);const active=requireMatchingClinicalPatient(normalized.patientId,normalized.fileNo),context=state.clinical?.context||{};
+  const plan=(context.plans||[]).find(item=>String(item.planId)===String(normalized.planId));if(!plan)throw new Error("الخطة غير موجودة ضمن سياق المريض الحالي");
+  const stage=(plan.stages||[]).find(item=>String(item.stageId)===String(normalized.stageId));if(!stage)throw new Error("المرحلة غير موجودة ضمن الخطة الحالية");
+  stage.done=normalized.completed;stage.status=normalized.status;stage.completedAt=normalized.completedAt;stage.summary=normalized.summary;plan.updatedAt=new Date().toISOString();
+  const completedCount=(plan.stages||[]).filter(item=>item.done).length,totalStages=(plan.stages||[]).length;
+  plan.progress=totalStages?Math.round(completedCount*100/totalStages):0;plan.status=completedCount===totalStages&&totalStages?"ready_to_close":"active";
+  archive.saveAssistantStage({...normalized,progress:plan.progress});archive.saveAssistantContext(context);server?.setAssistantContext(context);
+  const event=pushClinicalEvent("assistant_stage_updated",{patientId:active.patientId,fileNo:active.fileNo,planId:normalized.planId,stageId:normalized.stageId,payload:{...normalized,progress:plan.progress,planStatus:plan.status}});
+  notice(`تم تسجيل المرحلة: ${stage.title||normalized.stageId}`,"success");return{planId:normalized.planId,stageId:normalized.stageId,progress:plan.progress,planStatus:plan.status,savedAt:event.createdAt};
+}
+function closeAssistantPlan(payload={}){
+  const context=state.clinical?.context||{},patientId=String(payload.patientId||context.patient?.patientId||""),fileNo=String(payload.fileNo||context.patient?.fileNo||""),planId=String(payload.planId||"");
+  const active=requireMatchingClinicalPatient(patientId,fileNo);if(!planId)throw new Error("planId مطلوب");
+  const known=(context.plans||[]).some(plan=>String(plan.planId)===planId);if(!known)throw new Error("الخطة غير موجودة ضمن سياق المريض الحالي");
+  const closedPayload={doctorName:String(payload.doctorName||context.patient?.doctorName||""),reason:String(payload.reason||"closed_by_doctor")},event=pushClinicalEvent("assistant_plan_closed",{patientId:active.patientId,fileNo:active.fileNo,planId,payload:closedPayload});archive.saveAssistantPlanClosure({planId,...closedPayload,closedAt:event.createdAt});
+  context.plans=context.plans.filter(plan=>String(plan.planId)!==planId);archive.saveAssistantContext(context);server?.setAssistantContext(context);notice("تم إنهاء الخطة من تطبيق المساعد","success");return{planId,closedAt:event.createdAt};
+}
+function saveAssistantMedia(payload={}){
+  const context=state.clinical?.context||{},patientId=String(payload.patientId||context.patient?.patientId||""),fileNo=String(payload.fileNo||context.patient?.fileNo||"");requireMatchingClinicalPatient(patientId,fileNo);
+  const saved=archive.saveAssistantMedia(payload);pushClinicalEvent("assistant_media_saved",{patientId:archive.current.patientId,fileNo:archive.current.fileNo,planId:saved.planId,payload:{sessionId:saved.sessionId,kind:saved.kind,fileName:saved.fileName,bytes:saved.bytes}});if(payload.display&&saved.file)showFile(saved.file,"image",false);return{planId:saved.planId,sessionId:saved.sessionId,fileName:saved.fileName,bytes:saved.bytes,displayed:Boolean(payload.display)};
+}
+function treatmentList(){return Array.isArray(settings?.get("treatments"))?settings.get("treatments"):[];}
+function treatmentById(id){return treatmentList().find(item=>String(item.id)===String(id))||null;}
+function normalizeTreatment(item){return {id:String(item?.id||Date.now()),name:String(item?.name||"").trim(),filePath:String(item?.filePath||"").trim()};}
+function runCatchingTreatmentVersion(file){
+  try{const st=fs.statSync(file);return `${Math.round(st.mtimeMs)}-${st.size}`;}catch{return "";}
+}
+function displayConfig(){
+  return {
+    chainName:settings?.get("chainName")||"DR TAHER DENTAL CHAIN",
+    displayTitle:settings?.get("displayTitle")||"Clinic Display",
+    clinicDisplayName:settings?.get("clinicDisplayName")||"DR TAHER CLINIC",
+    clinicName:settings?.get("clinicName")||"عيادة د. طاهر",
+    homeEyebrow:settings?.get("homeEyebrow")||"DENTAL CHAIN",
+    specialty:settings?.get("specialty")||"DDS, PhD • Endodontics",
+    welcomeText:settings?.get("welcomeText")||"WELCOME",
+    comfortText:settings?.get("comfortText")||"نتمنى لك جلسة مريحة",
+    displayTheme:settings?.get("displayTheme")||"dark",
+    displayAspectProfile:settings?.get("displayAspectProfile")||"standard",
+    displayAspectFactor:Number(settings?.get("displayAspectFactor")||1)
+  };
+}
+
+const STAGE_ILLUSTRATION_EXTENSIONS=new Set([".png",".jpg",".jpeg",".webp"]);
+const STAGE_ILLUSTRATION_NAMES={
+  "periapical-lesion":"آفة حول ذروية وعلاج لبّي",
+  "fractured-root":"جذر أو سن غير قابل للترميم",
+  "caries-restoration":"إزالة النخر والترميم",
+  "crown-build-up":"بناء السن والتتويج",
+  "dental-implant":"زرعة وتعويض سن مفقود",
+  "periodontal-care":"معالجة لثوية وتنظيف"
+};
+function customStageIllustrationsDir(){return path.join(app.getPath("userData"),"StageIllustrations");}
+function uniqueStageIllustrationPath(dir,name){
+  const ext=path.extname(name).toLowerCase(),base=path.basename(name,ext).replace(/[<>:"/\\|?*\u0000-\u001f]/g," ").trim()||"stage-image";let file=path.join(dir,`${base}${ext}`),index=2;
+  while(fs.existsSync(file)){file=path.join(dir,`${base}-${index}${ext}`);index++;}return file;
+}
+function stageIllustrationItem(file,builtin){
+  const ext=path.extname(file).toLowerCase(),base=path.basename(file,ext),type=mime.lookup(file)||"image/png";
+  return{id:`${builtin?"builtin":"custom"}:${base}`,name:STAGE_ILLUSTRATION_NAMES[base]||base.replace(/[-_]+/g," "),path:file,builtin,dataUrl:`data:${type};base64,${fs.readFileSync(file).toString("base64")}`};
+}
+function listStageIllustrations(){
+  const builtInDir=path.join(app.getAppPath(),"assets","stage-illustrations"),customDir=customStageIllustrationsDir();fs.mkdirSync(customDir,{recursive:true});
+  const read=(dir,builtin)=>fs.existsSync(dir)?fs.readdirSync(dir,{withFileTypes:true}).filter(entry=>entry.isFile()&&STAGE_ILLUSTRATION_EXTENSIONS.has(path.extname(entry.name).toLowerCase())).map(entry=>stageIllustrationItem(path.join(dir,entry.name),builtin)):[];
+  return[...read(builtInDir,true),...read(customDir,false)];
+}
+
+function mediaPayload(file,type="image",optimizeImage=false,extra={}){
+  const url=server.registerMedia(file,optimizeImage);
+  const version=runCatchingTreatmentVersion(file)||String(Date.now());
+  const separator=url.includes("?")?"&":"?";
+  const freshUrl=`${url}${separator}v=${encodeURIComponent(version)}`;
+  return {
+    type,
+    kind:type,
+    url:freshUrl,
+    src:freshUrl,
+    mediaUrl:freshUrl,
+    imageUrl:freshUrl,
+    fileName:path.basename(file),
+    name:path.basename(file),
+    mimeType:mime.lookup(file)||"application/octet-stream",
+    version,
+    ...extra
+  };
+}
+
+async function showImageItem(item,kind="image"){
+  if(!item){notice("لا توجد صورة متاحة","error");return;}
+  currentMediaPath=item.path;
+  server.send(mediaPayload(item.path,"image",false,{position:images.index+1,total:images.items.length,kind}));
+  setDisplay({mode:"image",imageVisible:true});
+  enableViewerKeys();
+}
+
+function showFile(file,type,optimizeImage=false){
+  if(!file)return;
+  if(type==="image")currentMediaPath=file;
+  // الصور تبقى بصيغتها الأصلية لضمان عمل JPG/PNG/GIF/WebP على Android WebView.
+  // تحسين الصور متاح فقط كنسخة بديلة في الرابط ولا يغيّر نوع الملف المرسل.
+  server.send(mediaPayload(file,type,type==="image"?false:optimizeImage));
+  setDisplay({mode:type,imageVisible:type==="image"||type==="gif"});
+  if(type==="image"||type==="gif")enableViewerKeys(); else disableViewerKeys();
+}
+
+function chooseFile(filters,type,optimizeImage=false){
+  const r=dialog.showOpenDialogSync(win,{properties:["openFile"],filters});
+  if(r?.[0])showFile(r[0],type,optimizeImage);
+}
+
+function showHome(clearPatient=false){
+  if(clearPatient){
+    state.patient=archive?.clear()||{selected:false};
+    server?.setSession("");
+  }
+  server.send({type:"home",clearPatient:clearPatient===true},false);
+  setDisplay({mode:"home",imageVisible:false});
+  disableViewerKeys();
+}
+function showBlack(){server.send({type:"black"},false);setDisplay({mode:"black",imageVisible:false});disableViewerKeys();}
+function hide(){server.send({type:"hide"},false);setDisplay({imageVisible:false});disableViewerKeys();}
+
+
+function decodeBase64UrlUtf8(value){
+  try{
+    let s=String(value||"").replace(/-/g,"+").replace(/_/g,"/");
+    while(s.length%4)s+="=";
+    return Buffer.from(s,"base64").toString("utf8");
+  }catch{return""}
+}
+function findProtocolUrl(argv){
+  return (argv||[]).find(v=>String(v).startsWith("dentalchair://"))||null;
+}
+function pad2(v){return String(v).padStart(2,"0")}
+function localIcsDate(d){return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}T${pad2(d.getHours())}${pad2(d.getMinutes())}00`}
+function icsEscape(v){return String(v??"").replace(/\\/g,"\\\\").replace(/\n/g,"\\n").replace(/,/g,"\\,").replace(/;/g,"\\;")}
+function qrSetting(key,fallback){
+  const value=String(settings?.get(key)??"").trim();
+  return value||fallback;
+}
+function qrTemplate(value,clinic){return String(value||"").replace(/\{clinic\}/gi,clinic)}
+function qrReminderHours(){return Math.max(1,Math.min(168,Number(settings?.get("qrReminderHours"))||24))}
+function localIcsDay(d){return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}`}
+function buildAppointmentVevent(data){
+  const [y,mo,d]=String(data?.date||"").split("-").map(Number);
+  if(!y||!mo||!d)throw new Error("تاريخ الموعد غير صالح");
+  const [hhRaw,mmRaw]=String(data?.time||"09:00").split(":").map(Number);
+  const hh=Number.isFinite(hhRaw)?Math.max(0,Math.min(23,hhRaw)):9;
+  const mm=Number.isFinite(mmRaw)?Math.max(0,Math.min(59,mmRaw)):0;
+  const appointment=new Date(y,mo-1,d,hh,mm,0,0);
+  if(Number.isNaN(appointment.getTime())||appointment.getFullYear()!==y||appointment.getMonth()!==mo-1||appointment.getDate()!==d)throw new Error("تاريخ الموعد غير صالح");
+  const reminder=new Date(appointment);reminder.setDate(reminder.getDate()-1);
+  const clinic=String(data?.clinicName||settings?.get("clinicName")||"عيادة د. طاهر").trim();
+  const title=qrTemplate(qrSetting("qrReminderMessage","موعدك غداً في {clinic}"),clinic);
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//DTDC//Appointment Reminder//AR",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "BEGIN:VEVENT",
+    `UID:dtdc-${localIcsDay(reminder)}-${Date.now()}@dtdc.local`,
+    `DTSTAMP:${localIcsDate(new Date())}`,
+    `SUMMARY:${icsEscape(title)}`,
+    `DTSTART:${localIcsDate(reminder)}`,
+    `DTEND:${localIcsDate(appointment)}`,
+    `DESCRIPTION:${icsEscape(qrSetting("qrEventDescription","شكراً لثقتكم."))}`,
+    "STATUS:CONFIRMED",
+    "TRANSP:TRANSPARENT",
+    "END:VEVENT",
+    "END:VCALENDAR"
+  ].join("\r\n");
+}
+async function showAppointmentQr(data){
+  const payload=buildAppointmentVevent(data||{});
+  const qrDataUrl=await QRCode.toDataURL(payload,{errorCorrectionLevel:"M",width:760,margin:4,color:{dark:"#082f49",light:"#ffffff"}});
+  const [y,mo,d]=String(data?.date||"").split("-").map(Number);
+  const appointment=new Date(y,mo-1,d,...String(data?.time||"00:00").split(":").map(Number));
+  const reminder=new Date(appointment);reminder.setDate(reminder.getDate()-1);
+  const reminderDate=`${reminder.getFullYear()}-${pad2(reminder.getMonth()+1)}-${pad2(reminder.getDate())}`;
+  server.send({type:"appointment_qr",qrDataUrl,patientName:String(data?.patientName||""),date:reminderDate,startDate:reminderDate,endDate:String(data?.date||""),appointmentDate:String(data?.date||""),time:String(data?.time||""),clinicName:String(data?.clinicName||settings?.get("clinicName")||"عيادة د. طاهر"),reminderHours:24,title:qrTemplate(qrSetting("qrReminderMessage","موعدك غداً في {clinic}"),String(data?.clinicName||settings?.get("clinicName")||"عيادة د. طاهر"))});
+  setDisplay({mode:"appointment_qr",imageVisible:false});disableViewerKeys();notice("تم عرض QR لحدث يبدأ قبل الموعد بيوم وينتهي عند الموعد","success");return true;
+}
+function sendPatientToDisplay(payload={}){
+  const context=selectClinicalPatient(payload);
+  const fullName=String(state.patient?.fullName||payload.fullName||payload.displayName||"ضيفنا الكريم").trim();
+  const displayName=String(state.patient?.firstName||payload.firstName||payload.displayName||fullName.split(/\s+/)[0]||"ضيفنا الكريم").trim();
+  const rawGender=String(state.patient?.gender||payload.gender||"").toLowerCase();
+  const gender=rawGender==="female"||rawGender==="male"?rawGender:"";
+  const honorific=gender==="female"?"سيدة":gender==="male"?"سيد":"";
+  const greeting=honorific?`أهلاً بك ${honorific} ${displayName}`:`أهلاً بك ${displayName}`;
+  const doctorName=String(state.patient?.doctorName||payload.doctorName||"").trim();
+  const clinicName=String(state.patient?.clinicName||payload.clinicName||settings?.get("clinicName")||"عيادة د. طاهر").trim();
+  server?.setSession(state.patient?.sessionId||payload.sessionId||"");
+  server?.send({type:"patient",displayName,fullName,gender,honorific,greeting,doctorName,clinicName,sessionId:state.patient?.sessionId||"",...displayConfig()});
+  setDisplay({mode:"patient",imageVisible:false});disableViewerKeys();notice(`تم إرسال الترحيب: ${honorific?`${honorific} `:""}${displayName}`,"success");
+  return true;
+}
+async function handleCommand(payload){
+  if(payload?.action==="clear_patient"){
+    state.patient=archive?.clear()||{selected:false};
+    server?.setSession("");
+    server?.setCurrentState({type:"home",clearPatient:true,sessionId:""});
+    server?.clearAssistantContext();state.clinical={...state.clinical,context:null,planCount:0,updatedAt:new Date().toISOString()};
+    emit();
+    return true;
+  }
+  if(payload?.action==="select_patient"){
+    selectClinicalPatient(payload);
+    emit();return true;
+  }
+  if(payload?.action==="show_patient")return sendPatientToDisplay(payload);
+  if(payload?.action==="show_appointment_qr")return await showAppointmentQr(payload);
+  return false;
+}
+function handleProtocolUrl(raw){
+  try{
+    const url=new URL(String(raw||""));if(url.protocol!=="dentalchair:")return false;
+    const payload=JSON.parse(decodeBase64UrlUtf8(url.searchParams.get("data")||"")||"{}");
+    handleCommand(payload).catch(e=>notice(`تعذر تنفيذ الأمر: ${e.message}`,"error"));
+    return ["clear_patient","select_patient","show_patient","show_appointment_qr"].includes(payload?.action);
+  }catch(e){notice(`تعذر قراءة أمر شاشة الكرسي: ${e.message}`,"error")}
+  return false;
+}
+
+function shortcuts(){return {...DEFAULT_SHORTCUTS,...(settings?.get("shortcuts")||{})};}
+const VIEWER_SHORTCUT_KEYS=["moveLeft","moveRight","moveUp","moveDown","zoomIn","zoomOut","resetView","rotate","previous","next"];
+
+function safeRegister(accelerator,handler,label,used){
+  const key=String(accelerator||"").trim();
+  if(!key)return true;
+  const normalized=key.toLowerCase();
+  if(used?.has(normalized))return false;
+  try{
+    globalShortcut.unregister(key);
+    const ok=globalShortcut.register(key,()=>{
+      try{handler();}catch(error){notice(`تعذر تنفيذ الاختصار: ${error.message}`,"error");}
+    });
+    if(ok)used?.add(normalized);
+    return ok;
+  }catch(error){
+    notice(`تعذر تسجيل اختصار ${label||key}`,"warning");
+    return false;
+  }
+}
+function enableViewerKeys(){
+  disableViewerKeys();
+  const s=shortcuts();
+  const used=new Set(Object.entries(s)
+    .filter(([name,value])=>!VIEWER_SHORTCUT_KEYS.includes(name)&&String(value||"").trim())
+    .map(([,value])=>String(value).trim().toLowerCase()));
+  const moves=[
+    ["moveLeft",()=>server.send({type:"transform",dx:-70,dy:0},false),"تحريك الصورة لليسار"],
+    ["moveRight",()=>server.send({type:"transform",dx:70,dy:0},false),"تحريك الصورة لليمين"],
+    ["moveUp",()=>server.send({type:"transform",dx:0,dy:-70},false),"تحريك الصورة للأعلى"],
+    ["moveDown",()=>server.send({type:"transform",dx:0,dy:70},false),"تحريك الصورة للأسفل"],
+    ["zoomIn",()=>server.send({type:"transform",zoom:0.15},false),"تكبير الصورة"],
+    ["zoomOut",()=>server.send({type:"transform",zoom:-0.15},false),"تصغير الصورة"],
+    ["resetView",()=>server.send({type:"reset_view",target:state.display.mode==="treatment_plan"?"plan_panorama":"media"},false),"إعادة ضبط الصورة"],
+    ["rotate",()=>server.send({type:"transform",target:state.display.mode==="treatment_plan"?"plan_panorama":"media",rotate:20},false),"تدوير الصورة"],
+    ["previous",()=>showImageItem(images.previous()),"الصورة السابقة"],
+    ["next",()=>showImageItem(images.next()),"الصورة التالية"]
+  ];
+  moves.forEach(([name,handler,label])=>safeRegister(s[name],handler,label,used));
+}
+function disableViewerKeys(){
+  const s=shortcuts();
+  VIEWER_SHORTCUT_KEYS.map(name=>s[name]).filter(Boolean).forEach(key=>{try{globalShortcut.unregister(key);}catch{}});
+}
+function registerGlobalKeys(){
+  globalShortcut.unregisterAll();
+  const s=shortcuts(),used=new Set();
+  const base=[
+    ["latest",()=>showImageItem(images.latest()),"أحدث صورة"],
+    ["home",showHome,"واجهة الترحيب"],
+    ["black",showBlack,"الشاشة السوداء"],
+    ["tempImage",()=>chooseFile([{name:"Images",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff"]}],"image",true),"الصورة المؤقتة"],
+    ["treatments",()=>{if(win){win.show();win.focus();win.webContents.send("ui:open-treatments");}},"المعالجات"],
+    ["video",()=>chooseFile([{name:"Video",extensions:["mp4","webm","mkv"]}],"video",false),"الفيديو"],
+    ["pdf",()=>chooseFile([{name:"PDF",extensions:["pdf"]}],"pdf",false),"PDF"],
+    ["game",()=>server.send({type:"game"},false),"اللعبة"],
+    ["hide",hide,"إغلاق العرض"]
+  ];
+  const failed=[];
+  base.forEach(([name,handler,label])=>{if(!safeRegister(s[name],handler,label,used))failed.push(label)});
+  if(!safeRegister("Alt+I",()=>{if(win){win.show();win.focus();win.webContents.send("ui:open-clinical-studio","draw");}},"الرسم السريري اليدوي",used))failed.push("الرسم السريري اليدوي");
+  if(state.display.imageVisible)enableViewerKeys();
+  if(failed.length)notice(`راجع الاختصارات المتعارضة أو غير الصالحة: ${failed.join("، ")}`,"warning");
+}
+
+function createWindow(){
+  let silentStart=false;
+  if(pendingProtocolUrl){
+    try{
+      const url=new URL(String(pendingProtocolUrl));
+      const payload=JSON.parse(decodeBase64UrlUtf8(url.searchParams.get("data")||"")||"{}");
+      silentStart=payload.action==="select_patient";
+    }catch{}
+  }
+  win=new BrowserWindow({
+    width:980,height:860,minWidth:820,minHeight:720,
+    show:!settings.get("startMinimized")&&!silentStart,
+    backgroundColor:"#071727",
+    webPreferences:{preload:path.join(__dirname,"preload.js"),contextIsolation:true,nodeIntegration:false}
+  });
+  win.loadFile(path.join(__dirname,"..","renderer","index.html"));
+  win.on("close",e=>{if(!quitting){e.preventDefault();win.hide();}});
+  win.webContents.on("did-finish-load",emit);
+}
+
+function createTray(){
+  const iconPath=path.join(__dirname,"..","..","assets","app-icon.png");
+  let trayImage=nativeImage.createFromPath(iconPath);
+  if(!trayImage.isEmpty())trayImage=trayImage.resize({width:20,height:20});
+  tray=new Tray(trayImage.isEmpty()?nativeImage.createEmpty():trayImage);
+  tray.setToolTip("Dental Chain Chair Controller");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    {label:"فتح",click:()=>{win.show();win.focus();}},
+    {label:"أحدث صورة",click:()=>showImageItem(images.latest())},
+    {label:"ترحيب",click:showHome},
+    {label:"شاشة سوداء",click:showBlack},
+    {type:"separator"},
+    {label:"خروج",click:()=>{quitting=true;app.quit();}}
+  ]));
+}
+
+function ipc(){
+  ipcMain.handle("state:get",()=>state);
+  ipcMain.handle("diagnostics:get",()=>server.diagnostics());
+  ipcMain.handle("diagnostics:test",()=>server.testConnection());
+  ipcMain.handle("diagnostics:clear",()=>server.clearDiagnostics());
+  ipcMain.handle("diagnostics:copy",()=>{const report=JSON.stringify(server.diagnostics(),null,2);require("electron").clipboard.writeText(report);return true;});
+  ipcMain.handle("diagnostics:restart-discovery",()=>{discovery.stop();discovery.start();notice("تمت إعادة تشغيل الاكتشاف التلقائي","success");return true;});
+  ipcMain.handle("diagnostics:resend-state",()=>{if(server.currentState)server.send(server.currentState,{important:true,warn:true});else showHome(false);return true;});
+  ipcMain.handle("assistant:select",(_event,deviceId)=>{const network=server.selectAssistant(deviceId);settings.patch({selectedAssistantId:String(deviceId||"")});state.settings=settings.all();state.network=network;emit();return state;});
+  ipcMain.handle("display:aspect",(_event,payload={})=>{
+    const profile=["standard","corrected","custom"].includes(String(payload.profile))?String(payload.profile):"standard";
+    const factor=profile==="corrected"?0.703125:profile==="standard"?1:Math.max(.62,Math.min(1.12,Number(payload.factor)||1));
+    settings.patch({displayAspectProfile:profile,displayAspectFactor:factor});state.settings=settings.all();server.send({type:"display_aspect",profile,factor},false);emit();return state;
+  });
+  ipcMain.handle("sensor:choose",async()=>{
+    const r=await dialog.showOpenDialog(win,{properties:["openDirectory"],defaultPath:settings.get("sensorFolder")});
+    if(!r.canceled&&r.filePaths[0]){
+      settings.patch({sensorFolder:r.filePaths[0]});state.settings=settings.all();
+      await images.watch(r.filePaths[0]);emit();
+    }
+    return state;
+  });
+  ipcMain.handle("sensor:reindex",()=>images.scan(settings.get("sensorFolder")));
+  ipcMain.handle("image:latest",()=>showImageItem(images.latest()));
+  ipcMain.handle("image:previous",()=>showImageItem(images.previous()));
+  ipcMain.handle("image:next",()=>showImageItem(images.next()));
+  ipcMain.handle("media:temp-image",()=>chooseFile([{name:"Images",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff"]}],"image",true));
+  ipcMain.handle("media:gif",()=>chooseFile([{name:"GIF",extensions:["gif","webp"]}],"gif",false));
+  ipcMain.handle("media:video",()=>chooseFile([{name:"Video",extensions:["mp4","webm","mkv"]}],"video",false));
+  ipcMain.handle("media:pdf",()=>chooseFile([{name:"PDF",extensions:["pdf"]}],"pdf",false));
+  ipcMain.handle("archive:choose-root",async()=>{
+    const result=await dialog.showOpenDialog(win,{title:"اختر مجلد أرشيف المرضى",properties:["openDirectory","createDirectory"],defaultPath:archive.root()});
+    if(!result.canceled&&result.filePaths[0]){state.patient=archive.setRoot(result.filePaths[0]);state.settings=settings.all();emit();}
+    return state;
+  });
+  ipcMain.handle("archive:open-patient-folder",()=>shell.openPath(archive.requirePatient().patientDir));
+  ipcMain.handle("archive:list",(_event,category)=>archive.listArchive(category));
+  ipcMain.handle("archive:preview",(_event,file)=>archive.archivePreview(file));
+  ipcMain.handle("archive:show",(_event,file)=>{const preview=archive.archivePreview(file);if(preview.kind!=="image")throw new Error("يمكن عرض الصور فقط على شاشة الكرسي");showFile(preview.path,"image",false);return true;});
+  ipcMain.handle("archive:reveal",(_event,file)=>{const preview=archive.archivePreview(file);shell.showItemInFolder(preview.path);return true;});
+  ipcMain.handle("archive:delete",(_event,file)=>archive.deleteArchive(file));
+  ipcMain.handle("archive:import",async(_event,category)=>{archive.requirePatient();const result=await dialog.showOpenDialog(win,{title:"إضافة ملف إلى أرشيف المريض",properties:["openFile"],filters:[{name:"Clinical files",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff","pdf","json"]}]});return result.canceled?null:archive.importArchive(result.filePaths[0],category);});
+  ipcMain.handle("panorama:list",()=>archive.listPanoramas());
+  ipcMain.handle("panorama:import",async()=>{
+    archive.requirePatient();
+    const result=await dialog.showOpenDialog(win,{title:"إضافة صورة بانوراما إلى ملف المريض",properties:["openFile"],filters:[{name:"Dental Images",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff"]}]});
+    return result.canceled?null:archive.importPanorama(result.filePaths[0]);
+  });
+  ipcMain.handle("panorama:show",(_event,file)=>{
+    const allowed=archive.listPanoramas().find(item=>item.path===file);
+    if(!allowed)throw new Error("الصورة ليست ضمن مجلد بانوراما المريض");
+    showFile(allowed.path,"image",true);return true;
+  });
+  ipcMain.handle("plan:choose-background",async()=>{
+    const result=await dialog.showOpenDialog(win,{
+      title:"اختر خلفية المرحلة",
+      properties:["openFile"],
+      filters:[{name:"Images",extensions:["png","jpg","jpeg","webp","bmp"]}]
+    });
+    return result.canceled?"":(result.filePaths[0]||"");
+  });
+  ipcMain.handle("plan:save",(_event,plan)=>archive.savePlan(plan));
+  ipcMain.handle("plan:list",()=>archive.listPlans());
+  ipcMain.handle("plan:load",(_event,id)=>archive.loadPlan(id,true));
+  ipcMain.handle("plan:delete",(_event,id)=>archive.deletePlan(id));
+  ipcMain.handle("plan:show",(_event,plan)=>{
+    const requested=plan||{};
+    let displayed=requested?.id?archive.loadPlan(requested.id):requested;
+    if(requested.focusStageId){
+      displayed={...displayed,stages:(displayed.stages||[]).filter(stage=>String(stage.id||stage.stageId)===String(requested.focusStageId))};
+      displayed.totalCost=(displayed.stages||[]).reduce((sum,stage)=>sum+Number(stage.cost||0),0);
+      displayed.totalSessions=(displayed.stages||[]).reduce((sum,stage)=>sum+Number(stage.sessions||0),0);
+    }
+    const imagePath=[displayed.panoramaPath,displayed.sourceArchivePath,displayed.sourcePath]
+      .find(file=>file&&fs.existsSync(file))||"";
+    const panoramaUrl=imagePath?server.registerMedia(imagePath,false):"";
+    const labels=new Map((displayed.labels||[]).map(label=>[String(label.id),label]));
+    const allAnnotations=Array.isArray(displayed.annotations)?displayed.annotations:[];
+    const stages=(displayed.stages||[]).map((stage,index)=>{
+      const labelIds=new Set((stage.labelIds||[]).map(String));
+      const annotations=allAnnotations.filter(annotation=>
+        labelIds.has(String(annotation.labelId||""))||
+        String(annotation.stageId||"")===String(stage.id||stage.stageId||"")
+      ).map(annotation=>{
+        const label=labels.get(String(annotation.labelId||""))||{};
+        return {
+          annotationId:String(annotation.annotationId||annotation.id||`annotation-${index}`),
+          color:String(annotation.color||label.color||stage.color||"#32d6ff"),
+          opacity:Number(annotation.opacity??.28),
+          strokeWidth:Number(annotation.strokeWidth||4),
+          points:(annotation.points||[]).map(point=>({x:Number(point.x),y:Number(point.y)}))
+        };
+      });
+      const illustrationPath=stage.illustrationMode==="none"?"":[stage.illustrationPath,stage.imagePath].find(file=>file&&fs.existsSync(file))||"";
+      const backgroundPath=stage.backgroundPath&&fs.existsSync(stage.backgroundPath)?stage.backgroundPath:"";
+      return {
+        ...stage,
+        toothIds:stage.teeth||stage.toothIds||[],
+        annotations,
+        illustrationMode:illustrationPath?"selected":"none",
+        imageUrl:illustrationPath?server.registerMedia(illustrationPath,false):"",
+        mediaUrl:illustrationPath?server.registerMedia(illustrationPath,false):"",
+        backgroundUrl:backgroundPath?server.registerMedia(backgroundPath,false):""
+      };
+    });
+    const clean={...displayed,stages};
+    delete clean.displayImageDataUrl;
+    delete clean.annotatedImageDataUrl;
+    clean.stages=clean.stages.map(stage=>{
+      const item={...stage};
+      delete item.illustrationDataUrl;
+      delete item.backgroundDataUrl;
+      return item;
+    });
+    server.send({
+      type:"treatment_plan",
+      presentationStyle:"stage_cards_v2",
+      backgroundMotion:true,
+      panoramaInteractive:true,
+      plan:clean,
+      panoramaUrl,
+      imageUrl:panoramaUrl,
+      mediaUrl:panoramaUrl,
+      panoramaAspectRatio:Number(displayed.panoramaAspectRatio||0),
+      patient:state.patient,
+      sessionId:state.patient?.sessionId||""
+    });
+    setDisplay({mode:"treatment_plan",imageVisible:true});enableViewerKeys();return true;
+  });
+  ipcMain.handle("plan:navigate",(_event,action)=>{
+    server.send({type:"plan_navigate",action:String(action||"")},false);
+    return true;
+  });
+  ipcMain.handle("studio:current-source",()=>{
+    archive.requirePatient();
+    if(!currentMediaPath||!fs.existsSync(currentMediaPath))throw new Error("اعرض صورة أولاً ثم افتح الاستوديو");
+    const type=mime.lookup(currentMediaPath)||"image/jpeg";
+    return{path:currentMediaPath,name:path.basename(currentMediaPath),dataUrl:`data:${type};base64,${fs.readFileSync(currentMediaPath).toString("base64")}`};
+  });
+  ipcMain.handle("stage-illustrations:list",()=>listStageIllustrations());
+  ipcMain.handle("stage-illustrations:import",async()=>{
+    const result=await dialog.showOpenDialog(win,{title:"إضافة صورة توضيحية لمكتبة المراحل",properties:["openFile"],filters:[{name:"Images",extensions:["png","jpg","jpeg","webp"]}]});
+    if(result.canceled)return null;const sourceFile=result.filePaths[0],dir=customStageIllustrationsDir();fs.mkdirSync(dir,{recursive:true});const destination=uniqueStageIllustrationPath(dir,path.basename(sourceFile));fs.copyFileSync(sourceFile,destination);return stageIllustrationItem(destination,false);
+  });
+  ipcMain.handle("display:patient",(_e,p)=>{
+    return sendPatientToDisplay(p||{});
+  });
+  ipcMain.handle("display:home",()=>showHome(false));
+  ipcMain.handle("display:end",()=>showHome(true));
+  ipcMain.handle("display:black",showBlack);
+  ipcMain.handle("display:hide",hide);
+  ipcMain.handle("display:transform",(_e,p)=>server.send({type:"transform",target:state.display.mode==="treatment_plan"?"plan_panorama":"media",...p},false));
+  ipcMain.handle("display:reset",()=>server.send({type:"reset_view",target:state.display.mode==="treatment_plan"?"plan_panorama":"media"},false));
+  ipcMain.handle("display:rotate",()=>server.send({type:"transform",target:state.display.mode==="treatment_plan"?"plan_panorama":"media",rotate:20},false));
+  
+  ipcMain.handle("treatments:choose-gif",async()=>{
+    const result=await dialog.showOpenDialog(win,{
+      title:"اختر GIF المعالجة",
+      properties:["openFile"],
+      filters:[{name:"Animated Media",extensions:["gif","webp"]}]
+    });
+    return result.canceled?"":(result.filePaths[0]||"");
+  });
+  ipcMain.handle("treatments:save",(_e,item)=>{
+    const normalized=normalizeTreatment(item);
+    if(!normalized.name||!normalized.filePath){
+      throw new Error("اسم المعالجة وملف GIF مطلوبان");
+    }
+    const list=treatmentList();
+    const index=list.findIndex(x=>String(x.id)===normalized.id);
+    if(index>=0)list[index]=normalized;else list.push(normalized);
+    settings.patch({treatments:list});
+    state.settings=settings.all();
+    emit();
+    return normalized;
+  });
+  ipcMain.handle("treatments:delete",(_e,id)=>{
+    const list=treatmentList().filter(x=>String(x.id)!==String(id));
+    settings.patch({treatments:list});
+    state.settings=settings.all();
+    emit();
+    return true;
+  });
+  ipcMain.handle("treatments:play",(_e,id)=>{
+    const item=treatmentById(id);
+    if(!item)return false;
+    const url=server.registerMedia(item.filePath,false);
+    const version=runCatchingTreatmentVersion(item.filePath);
+    server.send({
+      type:"treatment_gif",
+      id:item.id,
+      name:item.name,
+      url,
+      version
+    });
+    setDisplay({mode:"treatment_gif",imageVisible:false});
+    disableViewerKeys();
+    return true;
+  });
+    ipcMain.handle("appointment:show-qr",async(_e,data)=>{
+    return await showAppointmentQr(data||{});
+  });
+
+  ipcMain.handle("display:game",()=>{
+    server.send({type:"game"},false);
+    setDisplay({mode:"game",imageVisible:false});
+    disableViewerKeys();
+    return true;
+  });
+
+  ipcMain.handle("display:theme",(_e,theme)=>{
+    const normalized=["light","dark","auto"].includes(String(theme))?String(theme):"dark";
+    settings.patch({displayTheme:normalized});
+    state.settings=settings.all();
+    server.send({type:"theme",theme:normalized},false);
+    emit();
+    notice(`تم تطبيق مظهر الشاشة: ${normalized}`,"success");
+    return state;
+  });
+  ipcMain.handle("settings:save",(_e,p)=>{
+    const patch={...(p||{})};
+    if(patch.shortcuts)patch.shortcuts={...DEFAULT_SHORTCUTS,...patch.shortcuts};
+    settings.patch(patch);state.settings=settings.all();
+    if(discovery)discovery.clinicName=settings.get("clinicName");
+    server.send({type:"display_config",...displayConfig()},false);
+    server.send({type:"theme",theme:settings.get("displayTheme")||"dark"},false);
+    registerGlobalKeys();
+    app.setLoginItemSettings({openAtLogin:Boolean(settings.get("launchAtLogin"))});emit();return state;
+  });
+}
+
+
+const gotSingleInstanceLock=app.requestSingleInstanceLock();
+if(!gotSingleInstanceLock){
+  app.quit();
+}else{
+  app.on("second-instance",(_event,argv)=>{
+    const url=findProtocolUrl(argv);
+    let silent=false;
+    if(url){try{const parsed=new URL(String(url));silent=JSON.parse(decodeBase64UrlUtf8(parsed.searchParams.get("data")||"")||"{}").action==="select_patient"}catch{}}
+    if(url){
+      if(server)handleProtocolUrl(url);
+      else pendingProtocolUrl=url;
+    }
+    if(win&&!silent){win.show();win.focus();}
+  });
+}
+
+if(process.defaultApp){
+  if(process.argv.length>=2){
+    app.setAsDefaultProtocolClient("dentalchair",process.execPath,[path.resolve(process.argv[1])]);
+  }
+}else{
+  app.setAsDefaultProtocolClient("dentalchair");
+}
+
+app.on("open-url",(event,url)=>{
+  event.preventDefault();
+  if(server)handleProtocolUrl(url);
+  else pendingProtocolUrl=url;
+});
+
+pendingProtocolUrl=findProtocolUrl(process.argv);
+
+app.whenReady().then(async()=>{
+  settings=new SettingsStore(app);state.settings=settings.all();
+  archive=new PatientArchive({app,settings,onState:selected=>{state.patient=selected;emit();},onNotice:notice});
+  state.patient=archive.snapshot();
+  images=new ImageLibrary({onState:s=>{state.images=s;if(s.currentPath)server?.prewarmMedia(s.currentPath,true);emit();},onNotice:notice});
+  server=new ChairServer({
+    port:settings.get("wsPort"),maxWidth:settings.get("mediaMaxWidth"),maxHeight:settings.get("mediaMaxHeight"),
+    onState:s=>{state.network=s;emit();},onNotice:notice,
+    getHelloPayload:displayConfig,onCommand:handleCommand,onAssistantStage:saveAssistantStage,onAssistantSession:saveAssistantSession,onAssistantPlanClosed:closeAssistantPlan,onAssistantMedia:saveAssistantMedia,getClinicalEvents,
+    selectedAssistantId:settings.get("selectedAssistantId"),onAssistantSelected:id=>{settings.patch({selectedAssistantId:id});state.settings=settings.all();emit();}
+  });
+  discovery=new DiscoveryBroadcaster({
+    port:settings.get("discoveryPort"),wsPort:settings.get("wsPort"),clinicName:settings.get("clinicName"),onNotice:notice
+  });
+  ipc();createWindow();createTray();
+  try{
+    await server.start();
+  }catch(error){
+    if(error?.code==="EADDRINUSE"){
+      dialog.showMessageBoxSync({
+        type:"info",
+        title:"Dental Chain Chair Controller",
+        message:"وحدة التحكم تعمل بالفعل",
+        detail:"تم العثور على نسخة أخرى تعمل في الخلفية. افتحها من الأيقونة بجانب الساعة."
+      });
+      quitting=true;
+      app.quit();
+      return;
+    }
+    throw error;
+  }
+  discovery.start();
+  images.watch(settings.get("sensorFolder")).catch(error=>notice(`تعذر فهرسة الصور: ${error.message}`,"warning"));
+  registerGlobalKeys();
+  server.send({type:"theme",theme:settings.get("displayTheme")||"dark"},false);
+  server.send({type:"display_aspect",profile:settings.get("displayAspectProfile")||"standard",factor:Number(settings.get("displayAspectFactor")||1)},false);
+  if(pendingProtocolUrl){handleProtocolUrl(pendingProtocolUrl);pendingProtocolUrl=null;}
+  app.setLoginItemSettings({openAtLogin:Boolean(settings.get("launchAtLogin"))});
+  emit();
+});
+app.on("before-quit",()=>{quitting=true;discovery?.stop();globalShortcut.unregisterAll();});
+app.on("window-all-closed",()=>{});
