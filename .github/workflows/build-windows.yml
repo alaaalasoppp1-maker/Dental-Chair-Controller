@@ -24,7 +24,7 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Validate
-        run: npm run check
+        run: npm run check && npm test
 
       - name: Build EXE without publishing
         run: npx electron-builder --win nsis portable --x64 --publish=never
