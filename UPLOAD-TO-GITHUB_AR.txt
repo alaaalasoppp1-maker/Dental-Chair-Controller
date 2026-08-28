@@ -1,0 +1,9 @@
+رفع Chair Controller 3.2.0 يدوياً
+==================================
+
+1) ارفع محتويات هذا المجلد إلى جذر مستودع Controller.
+2) يجب أن يظهر package.json ومجلد src ومجلد .github مباشرة في الجذر.
+3) بعد Commit افتح Actions ثم Build Chair Controller for Windows.
+4) عند نجاح البناء نزّل Artifact باسم Dental-Chair-Controller-Windows؛ بداخله نسخة التثبيت والنسخة Portable.
+
+لا تضف README أو package.json من GitHub عند إنشاء المستودع إذا كنت سترفع هذه الحزمة كاملة.
