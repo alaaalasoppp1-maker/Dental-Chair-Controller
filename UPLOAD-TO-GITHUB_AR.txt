@@ -5,7 +5,8 @@
 2) افتح مستودع Controller الحالي ثم Add file > Upload files.
 3) ارفع محتويات الحزمة إلى الجذر مع الحفاظ على المسارات ووافق على استبدال الملفات المتطابقة.
 4) لا تحذف بقية المستودع ولا تنشئ مجلداً أباً جديداً.
-5) بعد Commit افتح Actions ثم Build Chair Controller for Windows.
-6) عند نجاح البناء نزّل Artifact باسم Dental-Chair-Controller-Windows؛ بداخله نسخة التثبيت والنسخة Portable.
+5) تأكد أن الملف .github/workflows/build-windows.yml رُفع مكان الملف القديم وأن حجمه ليس صفراً.
+6) بعد Commit افتح Actions ثم Build Chair Controller for Windows.
+7) عند نجاح البناء نزّل Artifact باسم Dental-Chair-Controller-Windows؛ بداخله نسخة التثبيت والنسخة Portable.
 
 الحزمة تحتوي الملفات المعدلة فقط؛ لا ترفع ZIP نفسه داخل المستودع.
