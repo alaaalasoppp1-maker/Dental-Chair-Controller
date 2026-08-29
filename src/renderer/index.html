@@ -141,24 +141,31 @@
 
 <div id="patientArchiveModal" class="modal" aria-hidden="true">
   <div class="modal-card archive-browser-card">
-    <div class="drawer-head"><div><small>الأرشيف الموحّد</small><h2>ملف المريض السريري</h2><p id="archivePatientLabel">—</p></div><button id="closePatientArchive" class="icon-btn" type="button">✕</button></div>
-    <div class="archive-mode-tabs"><button id="archiveMediaTab" class="active" type="button">الميديا السريرية</button><button id="archivePlansTab" type="button">سجل الخطط المنفذة</button></div>
-    <section id="archiveMediaView" class="archive-mode-view">
-      <div id="archiveCategories" class="archive-categories"></div>
-      <div class="archive-toolbar"><button id="archiveImport" type="button">＋ استيراد نسخة</button><button id="archiveRefresh" type="button">تحديث</button><button id="archiveOpenFolder" type="button">📁 فتح المجلد</button><span id="archiveCount">0 ملف</span></div>
-      <div class="archive-browser-layout">
-        <div id="archiveItems" class="archive-items"><p class="empty-state">لا توجد ملفات.</p></div>
-        <section class="archive-preview"><div class="archive-preview-frame"><img id="archivePreviewImage" alt="معاينة الملف"><audio id="archivePreviewAudio" controls></audio><pre id="archivePreviewRecord"></pre><div id="archivePreviewEmpty">اختر ملفاً من الأرشيف</div></div><h3 id="archivePreviewName">—</h3><div class="archive-preview-actions"><button id="archiveDisplay" class="primary" type="button">عرض على الشاشة</button><button id="archiveCompare" type="button">إضافة للمقارنة</button><button id="archiveReveal" type="button">إظهار في المجلد</button><button id="archiveDelete" class="danger" type="button">حذف</button></div></section>
-      </div>
-      <section id="archiveComparePanel" class="archive-compare-panel" hidden><div class="section-title-row"><div><h3>مقارنة صورتين</h3><p>اختر صورتين من الأرشيف.</p></div><button id="archiveClearCompare" type="button">مسح</button></div><div id="archiveCompareGrid" class="archive-compare-grid"></div></section>
-    </section>
-    <section id="archivePlansView" class="archive-mode-view" hidden>
-      <div id="clinicalPlansList" class="clinical-plan-cards"><p class="empty-state">لا توجد خطط منفذة بعد.</p></div>
-      <section id="clinicalPlanDetail" class="clinical-plan-detail" hidden>
-        <div class="clinical-plan-detail-head"><button id="clinicalPlanBack" type="button">→ كل الخطط</button><div><h3 id="clinicalPlanTitle">سجل الخطة</h3><p id="clinicalPlanSummary">—</p></div></div>
-        <div class="clinical-plan-layout"><div id="clinicalTimeline" class="clinical-timeline"></div><aside class="clinical-plan-media"><h4>صور الخطة</h4><div id="clinicalPlanImages" class="clinical-media-list"></div><h4>التسجيلات الصوتية</h4><div id="clinicalPlanAudio" class="clinical-media-list"></div></aside></div>
-      </section>
-    </section>
+    <div class="drawer-head archive-head"><div><small>الأرشيف الموحّد</small><h2>ملف المريض السريري</h2><p id="archivePatientLabel">—</p></div><div class="archive-head-actions"><button id="archiveRefresh" class="archive-refresh" type="button" aria-label="تحديث">↻</button><button id="closePatientArchive" class="icon-btn" type="button">✕</button></div></div>
+    <div class="unified-archive-layout">
+      <aside class="archive-side-nav">
+        <button id="archivePlansHome" class="active" type="button">الخطط العلاجية</button>
+        <div id="archiveCategories" class="archive-categories"></div>
+        <button id="archiveOpenFolder" class="archive-open-folder" type="button">📁 فتح المجلد</button>
+      </aside>
+      <main class="archive-main-view">
+        <section id="archivePlansView" class="archive-mode-view">
+          <div id="clinicalPlansList" class="clinical-plan-cards"><p class="empty-state">لا توجد خطط بعد.</p></div>
+          <section id="clinicalPlanDetail" class="clinical-plan-detail" hidden>
+            <div class="clinical-plan-detail-head"><button id="clinicalPlanBack" type="button">→ كل الخطط</button><div><h3 id="clinicalPlanTitle">سجل الخطة</h3><p id="clinicalPlanSummary">—</p></div></div>
+            <div class="clinical-plan-layout"><div id="clinicalTimeline" class="clinical-timeline"></div><aside class="clinical-plan-media"><h4>صور الخطة</h4><div id="clinicalPlanImages" class="clinical-media-list"></div></aside></div>
+          </section>
+        </section>
+        <section id="archiveMediaView" class="archive-mode-view" hidden>
+          <div class="archive-toolbar"><button id="archiveImport" type="button">＋ استيراد صورة</button><span id="archiveCount">0 ملف</span></div>
+          <div class="archive-browser-layout">
+            <div id="archiveItems" class="archive-items"><p class="empty-state">لا توجد صور.</p></div>
+            <section class="archive-preview"><div class="archive-preview-frame"><img id="archivePreviewImage" alt="معاينة الملف"><audio id="archivePreviewAudio" controls></audio><pre id="archivePreviewRecord"></pre><div id="archivePreviewEmpty">اختر صورة من الأرشيف</div></div><h3 id="archivePreviewName">—</h3><div class="archive-preview-actions"><button id="archiveDisplay" class="primary" type="button">عرض على الشاشة</button><button id="archiveCompare" type="button">إضافة للمقارنة</button><button id="archiveReveal" type="button">إظهار في المجلد</button><button id="archiveDelete" class="danger" type="button">حذف</button></div></section>
+          </div>
+          <section id="archiveComparePanel" class="archive-compare-panel" hidden><div class="section-title-row"><div><h3>مقارنة صورتين</h3><p>اختر صورتين من الأرشيف.</p></div><button id="archiveClearCompare" type="button">مسح</button></div><div id="archiveCompareGrid" class="archive-compare-grid"></div></section>
+        </section>
+      </main>
+    </div>
   </div>
 </div>
 
@@ -322,7 +329,7 @@
   <header class="hero">
     <div class="brand">
       <img src="../../assets/app-icon.png" alt="">
-      <div><small>DR TAHER DENTAL CHAIN</small><h1>وحدة تحكم شاشة الكرسي</h1><p>Modern Technology • Precise Care • Continuous Follow-Up<br><small class="build-version">CLINIC UI • 3.2.0</small></p></div>
+      <div><small>DR TAHER DENTAL CHAIN</small><h1>وحدة تحكم شاشة الكرسي</h1><p>Modern Technology • Precise Care • Continuous Follow-Up<br><small class="build-version">CLINIC UI • 3.3.0</small></p></div>
     </div>
     <div class="hero-actions">
       <button id="controllerThemeToggle" class="controller-theme-toggle" type="button" title="تبديل مظهر الكونترولر"><span class="theme-icon">☀</span><span class="theme-label">فاتح</span></button>

@@ -112,7 +112,7 @@ function eventLabel(event={}){
     procedure_timer_finished:`انتهاء مؤقت ${d.procedure||d.control||"الإجراء"}`,
     materials_selected:`اختيار المواد: ${Array.isArray(d.materials)?d.materials.join("، "):d.materials||""}`
   };
-  return String(map[event.kind]||map[event.type]||event.summary||event.note||event.title||"حدث سريري").trim();
+  return String(event.summary||map[event.kind]||map[event.type]||event.note||event.title||"حدث سريري").trim();
 }
 
 class PatientArchive{
@@ -212,6 +212,11 @@ class PatientArchive{
     const normalized={...JSON.parse(JSON.stringify(session)),schema:"dtdc-assistant-session-v1",sessionId,planId,patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},archivedAt:new Date().toISOString()};
     const file=uniqueFile(dir,`${safePart(normalized.completedAt||normalized.startedAt||new Date().toISOString()).replace(/[: ]/g,"-")}-${sessionId}.json`);writeJson(file,normalized);return{...normalized,file};
   }
+  saveAssistantEvent(event={}){
+    const patient=this.requirePatient(),planId=safePart(event.planId||event.plan||"quick"),eventId=safePart(event.id||event.eventId||`event-${Date.now()}-${crypto.randomUUID().slice(0,8)}`),dir=path.join(this.assistantSessionsDir(),planId,"events");fs.mkdirSync(dir,{recursive:true});
+    const normalized={...JSON.parse(JSON.stringify(event)),schema:"dtdc-assistant-event-v1",id:eventId,eventId,planId,patientId:patient.patientId,fileNo:patient.fileNo,patientName:patient.fullName,at:String(event.at||new Date().toISOString()),archivedAt:new Date().toISOString()};
+    const file=path.join(dir,`${eventId}.json`);if(!fs.existsSync(file))writeJson(file,normalized);return{...normalized,file};
+  }
   saveAssistantStage(stage={}){
     const patient=this.requirePatient(),planId=safePart(stage.planId||"plan"),dir=path.join(this.assistantSessionsDir(),planId);fs.mkdirSync(dir,{recursive:true});
     const file=path.join(dir,"plan-progress.json");let progress={schema:"dtdc-plan-progress-v1",patientId:patient.patientId,fileNo:patient.fileNo,planId,stages:{},history:[]};
@@ -244,42 +249,44 @@ class PatientArchive{
     const context=media.clinicalContext&&typeof media.clinicalContext==="object"&&!Array.isArray(media.clinicalContext)?JSON.parse(JSON.stringify(media.clinicalContext)):{};
     const metadata={schema:"dtdc-assistant-media-v1",patientId:patient.patientId,fileNo:patient.fileNo,planId,sessionId,serviceId:String(context.serviceId||""),treatment:String(context.treatment||""),tooth:String(context.tooth||""),stage:String(context.stage||""),captureContext:String(context.captureContext||""),captureType:String(context.captureType||media.kind||"other"),kind:String(media.kind||"other"),mimeType:String(media.mimeType||"application/octet-stream"),fileName:path.basename(file),bytes:buffer.length,createdAt:new Date().toISOString(),clinicalContext:context};writeJson(`${file}.json`,metadata);return{...metadata,file};
   }
-  archiveCategories(){return[
-    {id:"all",label:"الكل"},{id:"Panorama",label:"بانوراما"},{id:"Sensor",label:"أشعة وسينسور"},{id:"Before",label:"قبل العلاج"},{id:"After",label:"بعد العلاج"},{id:"Intraoral",label:"داخل الفم"},{id:"Photos",label:"صور عادية"},{id:"AssistantMedia",label:"ميديا الجلسات"},{id:"audio",label:"تسجيلات صوتية"},{id:"Other",label:"أخرى"}
-  ];}
+  archiveCategories(){return[{id:"Panorama",label:"بانوراما"},{id:"Photos",label:"صور عادية"},{id:"all",label:"الكل"}];}
   listArchive(category="all"){
     const patient=this.requirePatient(),requested=String(category||"all"),items=[];
-    const add=(file,logical)=>{if(file.endsWith(".json")||file.endsWith(".sopix14"))return;let stat;try{stat=fs.statSync(file)}catch{return}const ext=path.extname(file).toLowerCase(),kind=IMAGE_EXTENSIONS.has(ext)?"image":AUDIO_EXTENSIONS.has(ext)?"audio":"file";if(requested==="audio"&&kind!=="audio")return;if(requested!=="all"&&requested!=="audio"&&requested!==logical)return;items.push({id:crypto.createHash("sha1").update(file).digest("hex").slice(0,16),category:logical,kind,name:path.basename(file),path:file,relativePath:path.relative(patient.patientDir,file),size:stat.size,modifiedAt:stat.mtimeMs,mimeType:mime.lookup(file)||"application/octet-stream"});};
+    const add=(file,logical)=>{if(file.endsWith(".json")||file.endsWith(".sopix14"))return;let stat;try{stat=fs.statSync(file)}catch{return}const ext=path.extname(file).toLowerCase(),kind=IMAGE_EXTENSIONS.has(ext)?"image":AUDIO_EXTENSIONS.has(ext)?"audio":"file";if(kind!=="image")return;let ordinaryLogical=["Before","After","Intraoral","Photos","Other"].includes(logical)?"Photos":logical;if(logical==="AssistantMedia"){const metadata=readJson(`${file}.json`,{}),context=metadata.clinicalContext&&typeof metadata.clinicalContext==="object"?metadata.clinicalContext:{},description=`${metadata.kind||""} ${metadata.captureType||""} ${context.captureType||""}`;ordinaryLogical=/xray|sensor|radiograph/i.test(description)?"AssistantXray":"Photos"}if(requested!=="all"&&requested!==ordinaryLogical)return;items.push({id:crypto.createHash("sha1").update(file).digest("hex").slice(0,16),category:ordinaryLogical,kind,name:path.basename(file),path:file,relativePath:path.relative(patient.patientDir,file),size:stat.size,modifiedAt:stat.mtimeMs,mimeType:mime.lookup(file)||"application/octet-stream"});};
     for(const logical of CORE_MEDIA_FOLDERS)for(const file of walkFiles(patient.folders[logical]))add(file,logical);
     for(const file of walkFiles(patient.folders.AssistantSessions))if(file.split(path.sep).includes("media"))add(file,"AssistantMedia");
     return{patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},categories:this.archiveCategories(),items:items.sort((a,b)=>b.modifiedAt-a.modifiedAt)};
   }
   listClinicalPlans(){
-    const patient=this.requirePatient(),root=patient.folders.AssistantSessions,items=[];
+    const patient=this.requirePatient(),root=patient.folders.AssistantSessions,plans=new Map(),active=readJson(path.join(root,"active-context.json"),{});
+    for(const plan of Array.isArray(active?.plans)?active.plans:[]){const planId=String(plan.planId||plan.id||"");if(!planId)continue;plans.set(planId,{planId,title:String(plan.serviceName||plan.title||plan.name||plan.serviceId||planId),serviceId:String(plan.serviceId||""),status:String(plan.status||"active"),progress:Number(plan.progress||0),closedAt:"",lastActivityAt:String(plan.updatedAt||active.archivedAt||active.sentAt||""),sessions:0,events:0,media:0});}
     for(const entry of fs.readdirSync(root,{withFileTypes:true}).filter(item=>item.isDirectory()&&!item.name.startsWith("."))){
-      const dir=path.join(root,entry.name),closure=readJson(path.join(dir,"plan-closed.json"),null),progress=readJson(path.join(dir,"plan-progress.json"),null),sessions=walkFiles(dir).filter(file=>file.endsWith(".json")&&!file.endsWith("plan-progress.json")&&!file.endsWith("plan-closed.json")&&!file.endsWith(".m4a.json")&&!file.endsWith(".jpg.json")&&!file.endsWith(".png.json")).map(file=>readJson(file,null)).filter(value=>value?.schema==="dtdc-assistant-session-v1"),latest=sessions.sort((a,b)=>isoTime(b.completedAt)-isoTime(a.completedAt))[0]||{};
-      const events=sessions.reduce((sum,item)=>sum+(Array.isArray(item.events)?item.events.length:0),0)+(progress?.history?.length||0),media=walkFiles(dir).filter(file=>!file.endsWith(".json")&&!file.endsWith(".sopix14")).length;
-      if(!closure&&!sessions.length&&!progress)continue;
-      items.push({planId:entry.name,title:String(latest.treatment||latest.serviceName||progress?.serviceName||closure?.serviceName||latest.serviceId||progress?.serviceId||closure?.serviceId||entry.name),serviceId:String(latest.serviceId||progress?.serviceId||closure?.serviceId||""),status:closure?"closed":latest.status||"completed",closedAt:closure?.closedAt||"",lastActivityAt:closure?.closedAt||latest.completedAt||progress?.updatedAt||"",sessions:sessions.length,events,media});
+      const dir=path.join(root,entry.name),files=walkFiles(dir),closure=readJson(path.join(dir,"plan-closed.json"),null),progress=readJson(path.join(dir,"plan-progress.json"),null),records=files.filter(file=>file.endsWith(".json")&&!file.endsWith(".m4a.json")&&!file.endsWith(".jpg.json")&&!file.endsWith(".jpeg.json")&&!file.endsWith(".png.json")&&!file.endsWith(".webp.json")).map(file=>readJson(file,null)).filter(Boolean),sessions=records.filter(value=>value.schema==="dtdc-assistant-session-v1"),individualEvents=records.filter(value=>value.schema==="dtdc-assistant-event-v1"),latest=sessions.sort((a,b)=>isoTime(b.completedAt||b.archivedAt)-isoTime(a.completedAt||a.archivedAt))[0]||{},previous=plans.get(entry.name)||{};
+      const uniqueEventIds=new Set(individualEvents.map(item=>String(item.id||item.eventId||"")));for(const session of sessions)for(const event of Array.isArray(session.events)?session.events:[])uniqueEventIds.add(String(event.id||event.eventId||`${event.kind}-${event.at}`));
+      const media=files.filter(file=>IMAGE_EXTENSIONS.has(path.extname(file).toLowerCase())).length,lastEvent=individualEvents.sort((a,b)=>isoTime(b.at)-isoTime(a.at))[0]||{};
+      if(!closure&&!sessions.length&&!progress&&!individualEvents.length&&!previous.planId)continue;
+      plans.set(entry.name,{planId:entry.name,title:String(previous.title||latest.treatment||latest.serviceName||progress?.serviceName||closure?.serviceName||lastEvent.treatment||latest.serviceId||progress?.serviceId||closure?.serviceId||entry.name),serviceId:String(previous.serviceId||latest.serviceId||progress?.serviceId||closure?.serviceId||lastEvent.serviceId||""),status:closure?"closed":String(previous.status||latest.status||progress?.status||"active"),progress:Number(previous.progress||progress?.progress||0),closedAt:closure?.closedAt||"",lastActivityAt:closure?.closedAt||lastEvent.at||latest.completedAt||latest.archivedAt||progress?.updatedAt||previous.lastActivityAt||"",sessions:sessions.length,events:uniqueEventIds.size+(progress?.history?.length||0),media});
     }
-    return{patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},plans:items.sort((a,b)=>isoTime(b.lastActivityAt)-isoTime(a.lastActivityAt))};
+    return{patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},plans:[...plans.values()].sort((a,b)=>isoTime(b.lastActivityAt)-isoTime(a.lastActivityAt))};
   }
   clinicalPlanDetail(planId){
-    const patient=this.requirePatient(),dir=path.join(patient.folders.AssistantSessions,safePart(planId));if(!insideRoot(patient.folders.AssistantSessions,dir)||!fs.existsSync(dir))throw new Error("سجل الخطة غير موجود");
-    const events=[],images=[],audio=[];
+    const patient=this.requirePatient(),dir=path.join(patient.folders.AssistantSessions,safePart(planId));if(!insideRoot(patient.folders.AssistantSessions,dir))throw new Error("سجل الخطة غير صالح");if(!fs.existsSync(dir))return{planId:String(planId),patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},events:[],images:[]};
+    const events=[],images=[];
+    const appendEvent=(event,fallbackAt="")=>events.push({id:String(event.id||event.eventId||crypto.randomUUID()),at:String(event.at||event.completedAt||event.archivedAt||fallbackAt||""),label:eventLabel(event),summary:String(event.summary||eventLabel(event)),kind:String(event.kind||event.type||"event"),stage:String(event.stage||event.screenId||""),screenTitle:String(event.screenTitle||""),tooth:String(event.tooth||""),canal:String(event.canal||event.channel||""),details:event.details&&typeof event.details==="object"?event.details:{...event},mediaPath:String(event.mediaPath||"")});
     for(const file of walkFiles(dir)){
       if(file.endsWith(".json")){
         const value=readJson(file,null);if(!value)continue;
-        if(value.schema==="dtdc-assistant-session-v1")for(const event of Array.isArray(value.events)?value.events:[])events.push({id:String(event.id||crypto.randomUUID()),at:String(event.at||value.completedAt||value.archivedAt||""),label:eventLabel(event),kind:String(event.kind||"event"),stage:String(event.stage||""),mediaPath:""});
+        if(value.schema==="dtdc-assistant-session-v1")for(const event of Array.isArray(value.events)?value.events:[])appendEvent(event,value.completedAt||value.archivedAt);
+        else if(value.schema==="dtdc-assistant-event-v1")appendEvent(value,value.archivedAt);
         else if(value.schema==="dtdc-plan-progress-v1")for(const event of Array.isArray(value.history)?value.history:[])events.push({id:String(event.eventId||crypto.randomUUID()),at:String(event.completedAt||event.archivedAt||event.updatedAt||""),label:String(event.summary||`اكتمال المرحلة ${event.stageId||""}`),kind:"stage",stage:String(event.stageId||""),mediaPath:""});
         continue;
       }
       if(file.endsWith(".sopix14"))continue;const ext=path.extname(file).toLowerCase(),metadata=readJson(`${file}.json`,{}),context=metadata.clinicalContext&&typeof metadata.clinicalContext==="object"?metadata.clinicalContext:{},item={id:crypto.createHash("sha1").update(file).digest("hex").slice(0,16),path:file,name:path.basename(file),mimeType:mime.lookup(file)||metadata.mimeType||"application/octet-stream",createdAt:String(metadata.createdAt||new Date(fs.statSync(file).mtimeMs).toISOString()),kind:String(metadata.kind||metadata.type||(AUDIO_EXTENSIONS.has(ext)?"audio":"image")),stage:String(metadata.captureContext||metadata.stage||context.captureContext||context.stage||""),tooth:String(metadata.tooth||context.tooth||"")};
-      if(AUDIO_EXTENSIONS.has(ext))audio.push(item);else if(IMAGE_EXTENSIONS.has(ext))images.push(item);
-      const radiograph=/xray|sensor|radiograph/i.test(`${item.kind} ${metadata.captureType||""}`),baseLabel=AUDIO_EXTENSIONS.has(ext)?"تسجيل صوتي":radiograph?"صورة شعاعية":item.kind==="intraoral"?"صورة كاميرا فموية":"صورة سريرية",location=[item.stage,item.tooth?`السن ${item.tooth}`:""].filter(Boolean).join(" — ");
-      events.push({id:`media-${item.id}`,at:item.createdAt,label:`${baseLabel}${location?` — ${location}`:""}`,kind:AUDIO_EXTENSIONS.has(ext)?"audio":"image",stage:item.stage,mediaPath:file});
+      if(!IMAGE_EXTENSIONS.has(ext))continue;images.push(item);
+      const radiograph=/xray|sensor|radiograph/i.test(`${item.kind} ${metadata.captureType||context.captureType||""}`),baseLabel=radiograph?"صورة شعاعية":item.kind==="intraoral"?"صورة كاميرا فموية":"صورة عادية",location=[context.screenTitle||item.stage,item.tooth?`السن ${item.tooth}`:"",context.canal?`القناة ${context.canal}`:""].filter(Boolean).join(" — ");
+      const closest=events.filter(event=>["image_saved","image_displayed","filtered_image_displayed"].includes(event.kind)&&!event.mediaPath&&Math.abs(isoTime(event.at)-isoTime(item.createdAt))<120000).sort((a,b)=>Math.abs(isoTime(a.at)-isoTime(item.createdAt))-Math.abs(isoTime(b.at)-isoTime(item.createdAt)))[0];if(closest)closest.mediaPath=file;else events.push({id:`media-${item.id}`,at:item.createdAt,label:`${baseLabel}${location?` — ${location}`:""}`,summary:`تم حفظ ${baseLabel}${location?` — ${location}`:""}`,kind:"image",stage:item.stage,screenTitle:String(context.screenTitle||""),tooth:item.tooth,canal:String(context.canal||""),details:context,mediaPath:file});
     }
-    const sorted=events.filter(item=>item.at).sort((a,b)=>isoTime(a.at)-isoTime(b.at));return{planId:String(planId),patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},events:sorted,images:images.sort((a,b)=>isoTime(b.createdAt)-isoTime(a.createdAt)),audio:audio.sort((a,b)=>isoTime(b.createdAt)-isoTime(a.createdAt))};
+    const deduped=new Map();for(const event of events.filter(item=>item.at).sort((a,b)=>isoTime(a.at)-isoTime(b.at))){const key=String(event.id||`${event.kind}-${event.at}-${event.label}`);const previous=deduped.get(key);deduped.set(key,previous?.mediaPath&&!event.mediaPath?previous:{...previous,...event,mediaPath:event.mediaPath||previous?.mediaPath||""});}return{planId:String(planId),patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},events:[...deduped.values()],images:images.sort((a,b)=>isoTime(b.createdAt)-isoTime(a.createdAt))};
   }
   archivePreview(file){
     const patient=this.requirePatient(),target=path.resolve(String(file||""));if(!insideRoot(patient.patientDir,target)||!fs.existsSync(target)||!fs.statSync(target).isFile())throw new Error("الملف ليس ضمن أرشيف المريض");

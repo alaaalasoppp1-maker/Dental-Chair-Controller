@@ -10,6 +10,10 @@ const serverSource=fs.readFileSync(path.join(__dirname,"../src/main/server.js"),
 for(const token of ["/display/presence","/display/commands","/display/ack","displaySequence","X-DTDC-Clinical-Context","decodeClinicalContext"]){
   assert.ok(serverSource.includes(token),`missing reliable display token ${token}`);
 }
+const mainSource=fs.readFileSync(path.join(__dirname,"../src/main/main.js"),"utf8");
+for(const token of ["presentationPrevious","presentationNext","plan_navigate","details:saved.details"]){
+  assert.ok(mainSource.includes(token),`missing controller integration token ${token}`);
+}
 
 assert.equal(CONTRACT_NAME,"dtdc-clinical-link-v1");
 assert.equal(TRANSPORT_PROTOCOL,5);
@@ -48,16 +52,32 @@ try{
   const archive=new PatientArchive({app:{getPath:()=>archiveRoot},settings:{get:key=>key==="patientArchiveRoot"?archiveRoot:"",patch:()=>{}},onState:()=>{},onNotice:()=>{}});
   archive.select({patientId:"P-0001",fileNo:"P-0001",fullName:"مريض اختبار"});
   archive.saveAssistantStage({planId:"PLAN-1",serviceId:"fiber-post",serviceName:"وتد فايبر",stageId:"fiber-post-1",status:"completed",completed:true,completedAt:"2026-08-26T06:00:00.000Z",summary:"فتح الحجرة"});
+  archive.saveAssistantEvent({
+    id:"EVENT-WIRE-1",planId:"PLAN-1",serviceId:"metal-orthodontics",treatment:"تقويم معدني",kind:"orthodontic_wire_installed",
+    summary:"تم تركيب سلك NITI — 016 — 0.016 × 0.022 — الفك العلوي",at:"2026-08-26T06:00:30.000Z",screenId:"wire",screenTitle:"سلك",stage:"تركيب السلك",tooth:"24",
+    details:{material:"NITI",roundSize:"016",rectangularSize:"0.016 × 0.022",arch:"upper"}
+  });
   const savedMedia=archive.saveAssistantMedia({
     buffer:Buffer.from("test-image"),fileName:"canal.jpg",mimeType:"image/jpeg",kind:"xray",planId:"PLAN-1",sessionId:"S-1",
     clinicalContext:{serviceId:"fiber-post",treatment:"وتد فايبر",tooth:"24",stage:"تحديد القناة",captureContext:"القناة الحنكية"}
   });
+  const ordinaryMedia=archive.saveAssistantMedia({
+    buffer:Buffer.from("ordinary-image"),fileName:"ordinary.jpg",mimeType:"image/jpeg",kind:"ordinary",planId:"PLAN-1",sessionId:"S-1",
+    clinicalContext:{serviceId:"fiber-post",treatment:"وتد فايبر",tooth:"24",stage:"تثبيت الوتد",captureType:"ordinary"}
+  });
   assert.equal(savedMedia.stage,"تحديد القناة");
   const detail=archive.clinicalPlanDetail("PLAN-1");
-  assert.equal(detail.images.length,1);
+  assert.equal(detail.images.length,2);
+  assert.ok(detail.events.some(item=>String(item.summary||"").includes("تم تركيب سلك NITI")),"detailed assistant actions must be readable in the plan timeline");
+  assert.equal(detail.events.find(item=>item.id==="EVENT-WIRE-1").details.rectangularSize,"0.016 × 0.022");
   assert.match(detail.events.find(item=>item.mediaPath===savedMedia.file).label,/صورة شعاعية/);
   assert.match(detail.events.find(item=>item.mediaPath===savedMedia.file).label,/السن 24/);
   assert.equal(archive.listClinicalPlans().plans[0].title,"وتد فايبر");
+  assert.ok(archive.listClinicalPlans().plans[0].events>=2,"plan cards must report saved clinical activity");
+  assert.deepEqual(archive.archiveCategories().map(item=>item.id),["Panorama","Photos","all"]);
+  const ordinaryArchive=archive.listArchive("Photos").items;
+  assert.ok(ordinaryArchive.some(item=>item.path===ordinaryMedia.file),"ordinary assistant photos must appear under ordinary photos");
+  assert.ok(!ordinaryArchive.some(item=>item.path===savedMedia.file),"radiographs must not appear under ordinary photos");
   fs.writeFileSync(path.join(archive.current.folders.TreatmentPlans,"plan-background.jpg"),"not-patient-media");
   assert.ok(!archive.listArchive("all").items.some(item=>item.name==="plan-background.jpg"),"plan backgrounds must not leak into patient media");
   let restored=archive.reconcileAssistantContext(JSON.parse(JSON.stringify(context)));

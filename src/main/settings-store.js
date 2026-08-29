@@ -21,7 +21,9 @@ const DEFAULT_SHORTCUTS = Object.freeze({
   resetView: "CommandOrControl+0",
   rotate: "CommandOrControl+Shift+8",
   previous: "CommandOrControl+PageUp",
-  next: "CommandOrControl+PageDown"
+  next: "CommandOrControl+PageDown",
+  presentationPrevious: "",
+  presentationNext: ""
 });
 const DEFAULT_CLINICAL_PHRASES = Object.freeze([
   "نخر بدئي","نكس نخر تحت الترميم","ألم عفوي","ألم محرض بالساخن","ناسور موجود","ألم ليلي",

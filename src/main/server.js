@@ -24,7 +24,7 @@ function decodeClinicalContext(value=""){
 }
 
 class ChairServer {
-  constructor({port,maxWidth,maxHeight,onState,onNotice,getHelloPayload,onCommand,onAssistantStage,onAssistantSession,onAssistantPlanClosed,onAssistantMedia,getClinicalEvents,selectedAssistantId,onAssistantSelected}) {
+  constructor({port,maxWidth,maxHeight,onState,onNotice,getHelloPayload,onCommand,onAssistantStage,onAssistantSession,onAssistantPlanClosed,onAssistantEvent,onAssistantMedia,getClinicalEvents,selectedAssistantId,onAssistantSelected}) {
     this.port=port;
     this.maxWidth=maxWidth;
     this.maxHeight=maxHeight;
@@ -35,6 +35,7 @@ class ChairServer {
     this.onAssistantStage=onAssistantStage||(()=>{throw new Error("assistant_stage_not_configured");});
     this.onAssistantSession=onAssistantSession||(()=>{throw new Error("assistant_session_not_configured");});
     this.onAssistantPlanClosed=onAssistantPlanClosed||(()=>{throw new Error("assistant_plan_close_not_configured");});
+    this.onAssistantEvent=onAssistantEvent||(()=>{throw new Error("assistant_event_not_configured");});
     this.onAssistantMedia=onAssistantMedia||(()=>{throw new Error("assistant_media_not_configured");});
     this.getClinicalEvents=getClinicalEvents||(()=>[]);
     this.onAssistantSelected=onAssistantSelected||(()=>{});
@@ -251,6 +252,12 @@ class ChairServer {
     });
     app.post("/assistant/plan-close",async(req,res)=>{
       try{this.requireSelectedAssistant(req,req.body||{});const result=await this.onAssistantPlanClosed(req.body||{});res.json({ok:true,result});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}
+    });
+    app.post("/assistant/event",async(req,res)=>{
+      try{this.requireSelectedAssistant(req,req.body||{});const result=await this.onAssistantEvent(req.body||{});res.json({ok:true,result});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}
+    });
+    app.post("/assistant/display-stop",async(req,res)=>{
+      try{this.requireSelectedAssistant(req,req.body||{});const displayClients=this.send({type:"hide"},{important:true,warn:false,targetRole:CLIENT_ROLES.DISPLAY});res.json({ok:true,result:{displayClients}});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}
     });
     app.post("/assistant/media",express.raw({type:"application/octet-stream",limit:"32mb"}),async(req,res)=>{
       try{this.requireSelectedAssistant(req,{});const result=await this.onAssistantMedia({buffer:req.body,fileName:req.get("x-dtdc-file-name")||"",mimeType:req.get("x-dtdc-mime-type")||"application/octet-stream",kind:req.get("x-dtdc-media-kind")||"other",patientId:req.get("x-dtdc-patient-id")||"",planId:req.get("x-dtdc-plan-id")||"",sessionId:req.get("x-dtdc-session-id")||"",clinicalContext:decodeClinicalContext(req.get("x-dtdc-clinical-context")||""),display:req.get("x-dtdc-display")==="1"});res.json({ok:true,result});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}
