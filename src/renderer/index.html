@@ -154,9 +154,9 @@
           <section id="clinicalPlanDetail" class="clinical-plan-detail" hidden>
             <div class="clinical-plan-detail-head"><button id="clinicalPlanBack" type="button">→ كل الخطط</button><div><h3 id="clinicalPlanTitle">سجل الخطة</h3><p id="clinicalPlanSummary">—</p></div></div>
             <section id="clinicalPlanReport" class="clinical-plan-report">
-              <div class="plan-report-grid"><article><small>المرحلة التي تم الوصول إليها</small><strong id="reportReachedStage">—</strong></article><article><small>الزمن الإجمالي للعلاج</small><strong id="reportDuration">00:00</strong></article><article><small>كمية المخدر</small><strong id="reportAnesthesia">0 أمبولة</strong></article><article><small>الترميم النهائي</small><strong id="reportRestoration">غير مسجل</strong></article></div>
+              <div class="plan-report-grid"><article><small>المرحلة التي تم الوصول إليها</small><strong id="reportReachedStage">—</strong></article><article><small>الزمن الإجمالي للعلاج</small><strong id="reportDuration">00:00</strong></article><article class="report-treatment-metric"><small>كمية المخدر</small><strong id="reportAnesthesia">0 أمبولة</strong></article><article class="report-treatment-metric"><small>الترميم النهائي</small><strong id="reportRestoration">غير مسجل</strong></article></div>
               <article class="plan-report-notes"><small>ملاحظات الخطة</small><div id="reportNotes">لا توجد ملاحظات مسجلة.</div></article>
-              <div class="plan-report-actions"><button id="clinicalShowOrdinary" type="button">صور عادية</button><button id="clinicalShowXrays" type="button">صور الأشعة</button><button id="clinicalShowDetails" class="primary" type="button">تفاصيل الخطة</button><button id="clinicalStopDisplay" class="danger" type="button">إنهاء العرض</button></div>
+              <div class="plan-report-actions"><button id="clinicalShowOrdinary" type="button">صور عادية</button><button id="clinicalShowXrays" type="button">صور الأشعة</button><button id="clinicalShowDetails" class="primary" type="button">تفاصيل الخطة</button></div>
             </section>
             <section id="clinicalPlanMediaView" class="clinical-subview" hidden><div class="clinical-subview-head"><button data-clinical-report type="button">→ تقرير الخطة</button><h4 id="clinicalMediaTitle">صور الخطة</h4></div><div id="clinicalPlanImages" class="clinical-media-gallery"></div></section>
             <section id="clinicalPlanDetailsView" class="clinical-subview" hidden><div class="clinical-subview-head"><button data-clinical-report type="button">→ تقرير الخطة</button><h4>تفاصيل الخطة</h4></div><div id="clinicalTimeline" class="clinical-timeline"></div></section>
@@ -166,7 +166,7 @@
           <div class="archive-toolbar"><button id="archiveImport" type="button">＋ استيراد صورة</button><span id="archiveCount">0 ملف</span></div>
           <div class="archive-browser-layout">
             <div id="archiveItems" class="archive-items"><p class="empty-state">لا توجد صور.</p></div>
-            <section class="archive-preview"><div class="archive-preview-frame"><img id="archivePreviewImage" alt="معاينة الملف"><audio id="archivePreviewAudio" controls></audio><pre id="archivePreviewRecord"></pre><div id="archivePreviewEmpty">اختر صورة من الأرشيف</div></div><h3 id="archivePreviewName">—</h3><div class="archive-preview-actions"><button id="archiveDisplay" class="primary" type="button">عرض على الشاشة</button><button id="archiveCompare" type="button">إضافة للمقارنة</button><button id="archiveReveal" type="button">إظهار في المجلد</button><button id="archiveDelete" class="danger" type="button">حذف</button></div></section>
+            <section class="archive-preview"><div class="archive-preview-frame"><img id="archivePreviewImage" alt="معاينة الملف"><audio id="archivePreviewAudio" controls></audio><pre id="archivePreviewRecord"></pre><div id="archivePreviewEmpty">اختر صورة من الأرشيف</div></div><h3 id="archivePreviewName">—</h3><div class="archive-preview-actions"><button id="archiveDisplay" class="primary" type="button">عرض على الشاشة</button><button id="archiveCompare" type="button">إضافة للمقارنة</button><button id="archiveStopDisplay" type="button">إلغاء العرض</button><button id="archiveReveal" type="button">إظهار في المجلد</button><button id="archiveDelete" class="danger" type="button">حذف</button></div></section>
           </div>
           <section id="archiveComparePanel" class="archive-compare-panel" hidden><div class="section-title-row"><div><h3>مقارنة صورتين</h3><p>اختر صورتين من الأرشيف.</p></div><button id="archiveClearCompare" type="button">مسح</button></div><div id="archiveCompareGrid" class="archive-compare-grid"></div></section>
         </section>
@@ -335,7 +335,7 @@
   <header class="hero">
     <div class="brand">
       <img src="../../assets/app-icon.png" alt="">
-      <div><small>DR TAHER DENTAL CHAIN</small><h1>وحدة تحكم شاشة الكرسي</h1><p>Modern Technology • Precise Care • Continuous Follow-Up<br><small class="build-version">CLINIC UI • 3.4.0</small></p></div>
+      <div><small>DR TAHER DENTAL CHAIN</small><h1>وحدة تحكم شاشة الكرسي</h1><p>Modern Technology • Precise Care • Continuous Follow-Up<br><small class="build-version">CLINIC UI • 3.5.0</small></p></div>
     </div>
     <div class="hero-actions">
       <button id="controllerThemeToggle" class="controller-theme-toggle" type="button" title="تبديل مظهر الكونترولر"><span class="theme-icon">☀</span><span class="theme-label">فاتح</span></button>

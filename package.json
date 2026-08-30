@@ -1,6 +1,6 @@
 {
   "name": "dental-chain-chair-controller",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "description": "Dental Chain Chair Controller with paired assistant, patient archive and calibrated display",
   "main": "src/main/main.js",
   "private": true,

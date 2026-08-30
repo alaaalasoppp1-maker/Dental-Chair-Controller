@@ -62,6 +62,11 @@ try{
   assert.match(detail.events.find(item=>item.mediaPath===savedMedia.file).label,/صورة شعاعية/);
   assert.match(detail.events.find(item=>item.mediaPath===savedMedia.file).label,/السن 24/);
   assert.equal(archive.listClinicalPlans().plans[0].title,"وتد فايبر");
+  archive.saveAssistantResumeState({planId:"DIAG-1",serviceId:"new-diagnosis",serviceName:"تشخيص جديد",progress:100,reachedStage:"التشخيص",resumeState:{activePlan:"new-diagnosis",screen:"diagnosis",totalTreatmentMs:15000}});
+  archive.saveAssistantEvent({planId:"DIAG-1",serviceId:"new-diagnosis",kind:"diagnosis",text:"ألم عفوي، ألم ليلي",at:"2026-08-26T06:02:00.000Z"});
+  const diagnosisDetail=archive.clinicalPlanDetail("DIAG-1");
+  assert.equal(diagnosisDetail.report.showTreatmentMetrics,false,"diagnosis cards must not show anesthesia/restoration counters");
+  assert.match(diagnosisDetail.report.notes[0].text,/ألم عفوي/);
   fs.writeFileSync(path.join(archive.current.folders.TreatmentPlans,"plan-background.jpg"),"not-patient-media");
   assert.ok(!archive.listArchive("all").items.some(item=>item.name==="plan-background.jpg"),"plan backgrounds must not leak into patient media");
   let restored=archive.reconcileAssistantContext(JSON.parse(JSON.stringify(context)));
