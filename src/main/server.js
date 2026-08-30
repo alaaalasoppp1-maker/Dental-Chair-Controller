@@ -24,7 +24,7 @@ function decodeClinicalContext(value=""){
 }
 
 class ChairServer {
-  constructor({port,maxWidth,maxHeight,onState,onNotice,getHelloPayload,onCommand,onAssistantStage,onAssistantSession,onAssistantPlanClosed,onAssistantEvent,onAssistantMedia,getClinicalEvents,selectedAssistantId,onAssistantSelected}) {
+  constructor({port,maxWidth,maxHeight,onState,onNotice,getHelloPayload,onCommand,onAssistantStage,onAssistantSession,onAssistantPlanClosed,onAssistantEvent,onAssistantResume,onAssistantMedia,getClinicalEvents,selectedAssistantId,onAssistantSelected}) {
     this.port=port;
     this.maxWidth=maxWidth;
     this.maxHeight=maxHeight;
@@ -36,6 +36,7 @@ class ChairServer {
     this.onAssistantSession=onAssistantSession||(()=>{throw new Error("assistant_session_not_configured");});
     this.onAssistantPlanClosed=onAssistantPlanClosed||(()=>{throw new Error("assistant_plan_close_not_configured");});
     this.onAssistantEvent=onAssistantEvent||(()=>{throw new Error("assistant_event_not_configured");});
+    this.onAssistantResume=onAssistantResume||(()=>{throw new Error("assistant_resume_not_configured");});
     this.onAssistantMedia=onAssistantMedia||(()=>{throw new Error("assistant_media_not_configured");});
     this.getClinicalEvents=getClinicalEvents||(()=>[]);
     this.onAssistantSelected=onAssistantSelected||(()=>{});
@@ -255,6 +256,9 @@ class ChairServer {
     });
     app.post("/assistant/event",async(req,res)=>{
       try{this.requireSelectedAssistant(req,req.body||{});const result=await this.onAssistantEvent(req.body||{});res.json({ok:true,result});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}
+    });
+    app.post("/assistant/resume",async(req,res)=>{
+      try{this.requireSelectedAssistant(req,req.body||{});const result=await this.onAssistantResume(req.body||{});res.json({ok:true,result});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}
     });
     app.post("/assistant/display-stop",async(req,res)=>{
       try{this.requireSelectedAssistant(req,req.body||{});const displayClients=this.send({type:"hide"},{important:true,warn:false,targetRole:CLIENT_ROLES.DISPLAY});res.json({ok:true,result:{displayClients}});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}

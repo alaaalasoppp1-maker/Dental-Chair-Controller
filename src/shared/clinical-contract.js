@@ -31,7 +31,8 @@ function normalizePlan(plan={},index=0){
     target:{type:targetType,teeth,region:text(sourceTarget.region||plan.region),jaw:text(sourceTarget.jaw||plan.jaw),label:text(sourceTarget.label||plan.targetLabel||plan.tooth)},
     tooth:teeth[0]||text(plan.tooth),teeth,priority:["normal","high","urgent"].includes(text(plan.priority))?text(plan.priority):"normal",
     plannedSessions:Math.max(1,Number(plan.plannedSessions||plan.sessions||1)||1),cost:Math.max(0,Number(plan.cost||0)||0),currency:text(plan.currency).toUpperCase()==="USD"?"USD":"SYP",
-    note:text(plan.note||plan.notes),status:text(plan.status||"active")||"active",doctorName:text(plan.doctorName||plan.doctor),createdAt:text(plan.createdAt),updatedAt:text(plan.updatedAt),
+    note:text(plan.note||plan.notes),status:text(plan.status||"active")||"active",progress:Math.max(0,Math.min(100,Number(plan.progress||0)||0)),doctorName:text(plan.doctorName||plan.doctor),createdAt:text(plan.createdAt),updatedAt:text(plan.updatedAt),
+    reachedStage:text(plan.reachedStage),completedActions:Math.max(0,Number(plan.completedActions||0)||0),totalActions:Math.max(0,Number(plan.totalActions||0)||0),resumeState:cleanObject(plan.resumeState),
     stages:sourceStages.map((stage,stageIndex)=>{const item=typeof stage==="string"?{title:stage}:cleanObject(stage);return{stageId:text(item.stageId||item.id||`${serviceId}-${stageIndex+1}`),index:stageIndex,title:text(item.title||item.text||`المرحلة ${stageIndex+1}`),done:Boolean(item.done),completedAt:text(item.completedAt)}})
   };
 }

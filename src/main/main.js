@@ -57,14 +57,18 @@ function saveAssistantStage(payload={}){
 }
 function saveAssistantEvent(payload={}){
   const context=state.clinical?.context||{},patientId=String(payload.patientId||context.patient?.patientId||""),fileNo=String(payload.fileNo||context.patient?.fileNo||""),active=requireMatchingClinicalPatient(patientId,fileNo),saved=archive.saveAssistantEvent(payload);
-  pushClinicalEvent("assistant_event",{patientId:active.patientId,fileNo:active.fileNo,planId:saved.planId,payload:{
-    id:saved.id,eventId:saved.eventId,at:saved.at,kind:saved.kind,summary:saved.summary,
-    screenId:saved.screenId,screenTitle:saved.screenTitle,stage:saved.stage,tooth:saved.tooth,canal:saved.canal,
-    serviceId:saved.serviceId,treatment:saved.treatment,
-    details:saved.details&&typeof saved.details==="object"?JSON.parse(JSON.stringify(saved.details)):{},
-    action:String(saved.action||""),control:String(saved.control||""),value:saved.value??null
-  }});
+  pushClinicalEvent("assistant_event",{patientId:active.patientId,fileNo:active.fileNo,planId:saved.planId,payload:{id:saved.id,eventId:saved.eventId,at:saved.at,kind:saved.kind,summary:saved.summary,screenId:saved.screenId,screenTitle:saved.screenTitle,stage:saved.stage,tooth:saved.tooth,canal:saved.canal,serviceId:saved.serviceId,treatment:saved.treatment}});
   return{eventId:saved.eventId,planId:saved.planId,archivedAt:saved.archivedAt};
+}
+function saveAssistantResumeState(payload={}){
+  const context=state.clinical?.context||{},patientId=String(payload.patientId||context.patient?.patientId||""),fileNo=String(payload.fileNo||context.patient?.fileNo||""),active=requireMatchingClinicalPatient(patientId,fileNo),planId=String(payload.planId||"");
+  if(!planId)throw new Error("planId مطلوب");
+  const resumeState=payload.resumeState&&typeof payload.resumeState==="object"&&!Array.isArray(payload.resumeState)?JSON.parse(JSON.stringify(payload.resumeState)):{};
+  const progress=Math.max(0,Math.min(100,Number(payload.progress||resumeState.progress||0)||0));
+  const saved=archive.saveAssistantResumeState({...payload,patientId:active.patientId,fileNo:active.fileNo,planId,progress,resumeState});
+  const plan=(context.plans||[]).find(item=>String(item.planId)===planId);
+  if(plan){plan.resumeState=resumeState;plan.progress=progress;plan.completedActions=Number(payload.completedActions||resumeState.completedActions||0)||0;plan.totalActions=Number(payload.totalActions||resumeState.totalActions||0)||0;plan.reachedStage=String(payload.reachedStage||resumeState.screen||"");plan.updatedAt=saved.updatedAt;if(progress>=100)plan.status="ready_to_close";else if(progress>0)plan.status="active";archive.saveAssistantContext(context);server?.setAssistantContext(context);}
+  return{planId,progress,updatedAt:saved.updatedAt};
 }
 function closeAssistantPlan(payload={}){
   const context=state.clinical?.context||{},patientId=String(payload.patientId||context.patient?.patientId||""),fileNo=String(payload.fileNo||context.patient?.fileNo||""),planId=String(payload.planId||"");
@@ -80,7 +84,10 @@ function saveAssistantDisplayOnly(payload={}){
 function saveAssistantMedia(payload={}){
   const context=state.clinical?.context||{},patientId=String(payload.patientId||context.patient?.patientId||""),fileNo=String(payload.fileNo||context.patient?.fileNo||"");requireMatchingClinicalPatient(patientId,fileNo);
   const displayOnly=Boolean(payload.display&&payload.clinicalContext?.displayOnly),saved=displayOnly?saveAssistantDisplayOnly(payload):archive.saveAssistantMedia(payload);if(!displayOnly)pushClinicalEvent("assistant_media_saved",{patientId:archive.current.patientId,fileNo:archive.current.fileNo,planId:saved.planId,payload:{sessionId:saved.sessionId,kind:saved.kind,fileName:saved.fileName,bytes:saved.bytes,file:saved.file,mimeType:saved.mimeType,createdAt:saved.createdAt,stage:saved.stage,captureContext:saved.captureContext,tooth:saved.tooth,clinicalContext:saved.clinicalContext}});
-  const displayClients=payload.display&&saved.file?showFile(saved.file,"image",true):0;
+  // Assistant captures are already normalized PNG/JPEG files. Send the exact
+  // bytes immediately; waiting for a second optimization pass caused black
+  // display frames and client-side timeouts on slower clinic laptops.
+  const displayClients=payload.display&&saved.file?showFile(saved.file,"image",false):0;
   return{planId:saved.planId,sessionId:saved.sessionId,fileName:saved.fileName,bytes:saved.bytes,displayRequested:Boolean(payload.display),displayed:Number(displayClients||0)>0,displayClients:Number(displayClients||0)};
 }
 function treatmentList(){return Array.isArray(settings?.get("treatments"))?settings.get("treatments"):[];}
@@ -431,7 +438,7 @@ function ipc(){
   ipcMain.handle("archive:list-clinical-plans",()=>archive.listClinicalPlans());
   ipcMain.handle("archive:clinical-plan-detail",(_event,planId)=>archive.clinicalPlanDetail(planId));
   ipcMain.handle("archive:preview",(_event,file)=>archive.archivePreview(file));
-  ipcMain.handle("archive:show",(_event,file)=>{const preview=archive.archivePreview(file);if(preview.kind!=="image")throw new Error("يمكن عرض الصور فقط على شاشة الكرسي");showFile(preview.path,"image",true);return true;});
+  ipcMain.handle("archive:show",(_event,file)=>{const preview=archive.archivePreview(file);if(preview.kind!=="image")throw new Error("يمكن عرض الصور فقط على شاشة الكرسي");showFile(preview.path,"image",false);return true;});
   ipcMain.handle("archive:reveal",(_event,file)=>{const preview=archive.archivePreview(file);shell.showItemInFolder(preview.path);return true;});
   ipcMain.handle("archive:delete",(_event,file)=>archive.deleteArchive(file));
   ipcMain.handle("archive:import",async(_event,category)=>{archive.requirePatient();const result=await dialog.showOpenDialog(win,{title:"إضافة ملف إلى أرشيف المريض",properties:["openFile"],filters:[{name:"Clinical files",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff","pdf","json"]}]});return result.canceled?null:archive.importArchive(result.filePaths[0],category);});
@@ -664,7 +671,7 @@ app.whenReady().then(async()=>{
   server=new ChairServer({
     port:settings.get("wsPort"),maxWidth:settings.get("mediaMaxWidth"),maxHeight:settings.get("mediaMaxHeight"),
     onState:s=>{state.network=s;emit();},onNotice:notice,
-    getHelloPayload:displayConfig,onCommand:handleCommand,onAssistantStage:saveAssistantStage,onAssistantSession:saveAssistantSession,onAssistantPlanClosed:closeAssistantPlan,onAssistantEvent:saveAssistantEvent,onAssistantMedia:saveAssistantMedia,getClinicalEvents,
+    getHelloPayload:displayConfig,onCommand:handleCommand,onAssistantStage:saveAssistantStage,onAssistantSession:saveAssistantSession,onAssistantPlanClosed:closeAssistantPlan,onAssistantEvent:saveAssistantEvent,onAssistantResume:saveAssistantResumeState,onAssistantMedia:saveAssistantMedia,getClinicalEvents,
     selectedAssistantId:settings.get("selectedAssistantId"),onAssistantSelected:id=>{settings.patch({selectedAssistantId:id});state.settings=settings.all();emit();}
   });
   discovery=new DiscoveryBroadcaster({
