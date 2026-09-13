@@ -1,52 +1,52 @@
 "use strict";
-
-const fs=require("fs");
-const path=require("path");
-const os=require("os");
-const {execFile}=require("child_process");
-
-function existing(files){return files.find(file=>file&&fs.existsSync(file))||"";}
-
-/**
- * Optional USB transport for Android TV/game sticks.
- *
- * It does not replace Wi-Fi and it does not require bundling adb. When Android
- * platform-tools are installed, every authorised USB device receives:
- *   adb -s <serial> reverse tcp:8765 tcp:8765
- * The Display then reaches the same HTTP protocol at 127.0.0.1:8765.
- */
-class AdbReverseLink{
-  constructor({port=8765,onState,onNotice}={}){
-    this.port=Number(port)||8765;this.onState=onState||(()=>{});this.onNotice=onNotice||(()=>{});
-    this.timer=null;this.running=false;this.last={available:false,connected:0,devices:[],message:"ADB غير متوفر — الاتصال اللاسلكي يعمل"};
-  }
-  adbPath(){
-    const exe=process.platform==="win32"?"adb.exe":"adb";
-    const roots=[process.env.ANDROID_HOME,process.env.ANDROID_SDK_ROOT,process.env.LOCALAPPDATA&&path.join(process.env.LOCALAPPDATA,"Android","Sdk"),path.join(os.homedir(),"AppData","Local","Android","Sdk")].filter(Boolean);
-    return existing(roots.map(root=>path.join(root,"platform-tools",exe)))||exe;
-  }
-  run(args,timeout=4500){
-    return new Promise((resolve,reject)=>execFile(this.adbPath(),args,{windowsHide:true,timeout},(error,stdout,stderr)=>error?reject(Object.assign(error,{stderr})):resolve(String(stdout||""))));
-  }
-  async refresh(){
-    if(this.running)return this.last;this.running=true;
-    try{
-      const output=await this.run(["devices"]),devices=output.split(/\r?\n/).slice(1).map(line=>line.trim().split(/\s+/)).filter(parts=>parts.length>=2&&parts[1]==="device").map(parts=>parts[0]);
-      const linked=[];
-      for(const serial of devices){
-        try{await this.run(["-s",serial,"reverse",`tcp:${this.port}`,`tcp:${this.port}`]);linked.push(serial);}catch{}
-      }
-      const changed=JSON.stringify(linked)!==JSON.stringify(this.last.devices);
-      this.last={available:true,connected:linked.length,devices:linked,message:linked.length?`USB متصل تلقائياً مع ${linked.length} جهاز`:(devices.length?"جهاز USB غير مخوّل؛ وافق على رسالة USB debugging":"ADB جاهز — بانتظار كابل USB")};
-      if(changed&&linked.length)this.onNotice("تم تفعيل اتصال الشاشة السلكي عبر USB","success");
-    }catch(error){
-      this.last={available:false,connected:0,devices:[],message:error?.code==="ENOENT"?"ثبّت Android Platform Tools لتفعيل USB (اللاسلكي مستمر)":"تعذر فحص USB مؤقتاً — اللاسلكي مستمر"};
-    }finally{this.running=false;this.onState({...this.last});}
-    return this.last;
-  }
-  start(){if(this.timer)return;this.refresh();this.timer=setInterval(()=>this.refresh(),5000);}
-  stop(){if(this.timer)clearInterval(this.timer);this.timer=null;}
-  snapshot(){return{...this.last};}
+// Optional USB transport. Never restart the shared adb server or change ports
+// belonging to another program. Missing platform-tools must not prevent startup.
+const {execFile}=require("node:child_process");
+const fs=require("node:fs"),path=require("node:path");
+function adbExecutable(){
+  const name=process.platform==="win32"?"adb.exe":"adb";
+  const candidates=[
+    process.env.DTDC_ADB_PATH,
+    process.resourcesPath&&path.join(process.resourcesPath,"platform-tools",name),
+    process.env.ANDROID_SDK_ROOT&&path.join(process.env.ANDROID_SDK_ROOT,"platform-tools",name),
+    process.env.ANDROID_HOME&&path.join(process.env.ANDROID_HOME,"platform-tools",name)
+  ].filter(Boolean);
+  return candidates.find(file=>{try{return fs.statSync(file).isFile()}catch{return false}})||name;
 }
-
-module.exports={AdbReverseLink};
+function execute(file,args){return new Promise((resolve,reject)=>execFile(file,args,{windowsHide:true,timeout:5000,maxBuffer:65536},(error,stdout)=>error?reject(error):resolve(String(stdout||""))))}
+function parseDevices(stdout){
+  return String(stdout||"").split(/\r?\n/).map(line=>line.trim().split(/\s+/)).filter(parts=>parts.length>1&&/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/.test(parts[0])&&['device','offline','unauthorized'].includes(parts[1])).map(([serial,status])=>({serial,status}));
+}
+class AdbReverseLink{
+  constructor({port,onState=()=>{},onNotice=()=>{},run=execute,executable=adbExecutable(),intervalMs=8000}){
+    if(!Number.isInteger(Number(port))||Number(port)<1024||Number(port)>65535)throw Error('invalid-controller-port');
+    this.port=Number(port);this.run=run;this.executable=executable;this.intervalMs=intervalMs;
+    this.onState=onState;this.onNotice=onNotice;this.stopped=true;this.timer=null;this.busy=false;this.generation=0;
+    this.value={status:'stopped',connected:0,unauthorized:0,offline:0};this.failures=0;
+  }
+  snapshot(){return {...this.value}}
+  publish(value){this.value={...value,checkedAt:Date.now()};this.onState(this.snapshot())}
+  start(){if(!this.stopped)return;this.stopped=false;this.generation++;this.timer=setTimeout(()=>this.tick(),0)}
+  stop(){this.stopped=true;this.generation++;clearTimeout(this.timer);this.timer=null}
+  async tick(){
+    if(this.stopped||this.busy)return;this.busy=true;const generation=this.generation,valid=()=>!this.stopped&&generation===this.generation;
+    try{
+      const devices=parseDevices(await this.run(this.executable,['devices','-l']));if(!valid())return;
+      const local='tcp:'+this.port;let connected=0,conflicts=0;
+      for(const device of devices.filter(row=>row.status==='device')){
+        const rows=String(await this.run(this.executable,['-s',device.serial,'reverse','--list'])).trim().split(/\r?\n/).map(line=>line.trim().split(/\s+/));if(!valid())return;
+        const mapping=rows.find(parts=>parts[parts.length-2]===local);
+        if(mapping){if(mapping[mapping.length-1]===local)connected++;else conflicts++;continue}
+        await this.run(this.executable,['-s',device.serial,'reverse','--no-rebind',local,local]);if(!valid())return;connected++;
+      }
+      this.failures=0;this.publish({status:conflicts?'port-conflict':connected?'connected':devices.some(row=>row.status==='unauthorized')?'unauthorized':'waiting',connected,conflicts,unauthorized:devices.filter(row=>row.status==='unauthorized').length,offline:devices.filter(row=>row.status==='offline').length});
+    }catch(error){
+      if(!valid())return;this.failures++;
+      const unavailable=error?.code==='ENOENT';this.publish({status:unavailable?'unavailable':'error',connected:0,unauthorized:0,offline:0});
+      if(this.failures===1)this.onNotice(unavailable?'اتصال USB يحتاج Android platform-tools. يبقى اتصال الشبكة متاحاً.':'تعذر تجهيز اتصال USB. تحقق من الكابل وإذن تصحيح USB على الجهاز.','warning');
+    }finally{
+      this.busy=false;if(!this.stopped)this.timer=setTimeout(()=>this.tick(),Math.min(60000,this.intervalMs*Math.pow(2,Math.min(this.failures,3))));
+    }
+  }
+}
+module.exports={AdbReverseLink,parseDevices};

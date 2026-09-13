@@ -6,7 +6,7 @@ const path=require("node:path");
 const {CONTRACT_NAME,TRANSPORT_PROTOCOL,CLIENT_ROLES,SERVICE_IDS,contextFromCommand,normalizeAssistantSession,normalizeAssistantStage,normalizeRole}=require("../src/shared/clinical-contract");
 const {PatientArchive}=require("../src/main/patient-archive");
 
-const serverSource=fs.readFileSync(path.join(__dirname,"../src/main/server.js"),"utf8");
+const serverSource=fs.readFileSync(path.join(__dirname,"../src/main/server.js"),"utf8")+fs.readFileSync(path.join(__dirname,"../src/main/http-policy.js"),"utf8");
 for(const token of ["/display/presence","/display/commands","/display/ack","displaySequence","X-DTDC-Clinical-Context","decodeClinicalContext"]){
   assert.ok(serverSource.includes(token),`missing reliable display token ${token}`);
 }
@@ -20,7 +20,7 @@ assert.equal(normalizeRole("untrusted"),CLIENT_ROLES.UNKNOWN);
 
 const context=contextFromCommand({
   contextId:"context-test",
-  patient:{patientId:"P-0001",fileNo:"P-0001",fullName:"مريض اختبار",sessionId:"chair-test"},
+  patient:{clinicId:"A",patientId:"P-0001",fileNo:"P-0001",fullName:"مريض اختبار",sessionId:"chair-test"},
   plans:[
     {planId:"PLAN-1",serviceId:"fiber-post",serviceName:"وتد فايبر",tooth:"24",priority:"urgent",plannedSessions:2,steps:[{stageId:"fiber-post-1",text:"فتح الحجرة",done:false}]},
     {planId:"PLAN-DONE",serviceId:"cleaning",status:"done"},
@@ -33,8 +33,9 @@ assert.equal(context.plans[0].serviceId,"fiber-post");
 assert.deepEqual(context.plans[0].target.teeth,["24"]);
 assert.equal(context.plans[0].stages[0].stageId,"fiber-post-1");
 
-const session=normalizeAssistantSession({sessionId:"S-1",patientId:"P-0001",planId:"PLAN-1",completedStageIds:["fiber-post-1"]},context);
+const session=normalizeAssistantSession({sessionId:"S-1",chairSessionId:"chair-test",patientId:"P-0001",planId:"PLAN-1",completedStageIds:["fiber-post-1"]},context);
 assert.equal(session.schema,"dtdc-assistant-session-v1");
+assert.equal(session.chairSessionId,"chair-test");
 assert.deepEqual(session.completedStageIds,["fiber-post-1"]);
 assert.throws(()=>normalizeAssistantSession({patientId:"P-0001"},context),/planId/);
 
@@ -46,7 +47,7 @@ assert.throws(()=>normalizeAssistantStage({patientId:"P-0001",planId:"PLAN-1"},c
 const archiveRoot=fs.mkdtempSync(path.join(os.tmpdir(),"dtdc-archive-test-"));
 try{
   const archive=new PatientArchive({app:{getPath:()=>archiveRoot},settings:{get:key=>key==="patientArchiveRoot"?archiveRoot:"",patch:()=>{}},onState:()=>{},onNotice:()=>{}});
-  archive.select({patientId:"P-0001",fileNo:"P-0001",fullName:"مريض اختبار"});
+  archive.select({clinicId:"A",patientId:"P-0001",fileNo:"P-0001",fullName:"مريض اختبار"});
   archive.saveAssistantStage({planId:"PLAN-1",serviceId:"fiber-post",serviceName:"وتد فايبر",stageId:"fiber-post-1",status:"completed",completed:true,completedAt:"2026-08-26T06:00:00.000Z",summary:"فتح الحجرة"});
   archive.saveAssistantResumeState({planId:"PLAN-1",serviceId:"fiber-post",serviceName:"وتد فايبر",progress:42,reachedStage:"تحديد القناة",completedActions:5,totalActions:12,resumeState:{screen:"layout",layoutStep:1,canals:[178,null],totalTreatmentMs:120000}});
   const savedMedia=archive.saveAssistantMedia({

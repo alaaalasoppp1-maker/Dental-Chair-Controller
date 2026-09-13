@@ -14,8 +14,6 @@ contextBridge.exposeInMainWorld("chairAPI",{
   chooseArchiveRoot:()=>ipcRenderer.invoke("archive:choose-root"),
   openPatientFolder:()=>ipcRenderer.invoke("archive:open-patient-folder"),
   listArchive:category=>ipcRenderer.invoke("archive:list",category),
-  listClinicalPlans:()=>ipcRenderer.invoke("archive:list-clinical-plans"),
-  getClinicalPlanDetail:planId=>ipcRenderer.invoke("archive:clinical-plan-detail",planId),
   previewArchive:path=>ipcRenderer.invoke("archive:preview",path),
   showArchive:path=>ipcRenderer.invoke("archive:show",path),
   revealArchive:path=>ipcRenderer.invoke("archive:reveal",path),

@@ -46,7 +46,7 @@ function normalizeAssistantSession(value={},context=null){
   const patientId=text(payload.patientId||patient.patientId||activePatient.patientId),planId=text(payload.planId||payload.activePlanId),sessionId=text(payload.sessionId)||`assistant-${Date.now()}`;
   if(!patientId)throw new Error("patientId مطلوب");if(!planId)throw new Error("planId مطلوب");
   return{
-    schema:"dtdc-assistant-session-v1",contract:CONTRACT_NAME,contractVersion:CONTRACT_VERSION,sessionId,patientId,fileNo:text(payload.fileNo||patient.fileNo||activePatient.fileNo),planId,
+    schema:"dtdc-assistant-session-v1",contract:CONTRACT_NAME,contractVersion:CONTRACT_VERSION,sessionId,chairSessionId:text(payload.chairSessionId||patient.sessionId||activePatient.sessionId),patientId,fileNo:text(payload.fileNo||patient.fileNo||activePatient.fileNo),planId,
     serviceId:text(payload.serviceId||payload.activePlan?.serviceId),doctorName:text(payload.doctorName||activePatient.doctorName),status:text(payload.status||"completed"),
     startedAt:text(payload.startedAt),completedAt:text(payload.completedAt)||new Date().toISOString(),completedStageIds:cleanArray(payload.completedStageIds).map(text).filter(Boolean),
     currentStageId:text(payload.currentStageId),summary:text(payload.summary||payload.note),events:cleanArray(payload.events).slice(0,2000),media:cleanArray(payload.media||payload.images).slice(0,500)

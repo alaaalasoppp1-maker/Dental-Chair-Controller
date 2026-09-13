@@ -5,6 +5,7 @@ const path=require("path");
 let mime;
 try{mime=require("mime-types")}catch{mime={lookup(file){const ext=path.extname(String(file||"")).toLowerCase();return ext===".png"?"image/png":[".jpg",".jpeg"].includes(ext)?"image/jpeg":ext===".webp"?"image/webp":"application/octet-stream"}}}
 const crypto=require("crypto");
+const ArchiveIdentity=require("../shared/archive-identity");
 
 const IMAGE_EXTENSIONS=new Set([".png",".jpg",".jpeg",".bmp",".webp",".tif",".tiff"]);
 const AUDIO_EXTENSIONS=new Set([".m4a",".aac",".wav",".mp3",".ogg",".webm"]);
@@ -28,16 +29,21 @@ function safePart(value,fallback="patient"){
 }
 function matchPart(value){return String(value||"").normalize("NFKC").toLocaleLowerCase().replace(/[\s_\-–—]+/g," ").trim();}
 function sameValue(a,b){return Boolean(a&&b&&matchPart(a)===matchPart(b));}
-function insideRoot(root,candidate){const relative=path.relative(path.resolve(root),path.resolve(candidate));return relative===""||(!relative.startsWith("..")&&!path.isAbsolute(relative));}
+function insideRoot(root,candidate){
+  try{const actualRoot=fs.realpathSync(root),actual=fs.existsSync(candidate)?fs.realpathSync(candidate):path.join(fs.realpathSync(path.dirname(candidate)),path.basename(candidate)),relative=path.relative(actualRoot,actual);return relative===""||(!relative.startsWith("..")&&!path.isAbsolute(relative))}catch{return false;}
+}
 function readPatientManifest(dir){
-  for(const name of ["_patient.json",".dtdc-patient.json","patient.json"]){
+  const records=[];
+  for(const name of ["patient.json","_patient.json",".dtdc-patient.json"]){
     const file=path.join(dir,name);if(!fs.existsSync(file))continue;
-    try{return JSON.parse(fs.readFileSync(file,"utf8"));}catch{}
+    try{if(!insideRoot(dir,file))throw new Error('manifest path');const row=JSON.parse(fs.readFileSync(file,"utf8"));if(!row||typeof row!=='object'||Array.isArray(row))throw new Error('invalid manifest');records.push(row)}catch{throw new Error("تعذر التحقق من بيان هوية مجلد الأرشيف. لم يُستبدل المجلد.");}
   }
-  return null;
+  const identities=new Set(records.filter(row=>row.clinicId&&(row.patientId||row.id)).map(row=>JSON.stringify([String(row.clinicId),String(row.patientId||row.id)])));
+  if(identities.size>1)throw new Error("بيانات هوية المجلد متعارضة. راجع الأرشيف قبل المتابعة.");
+  return records[0]||null;
 }
 function patientDirectories(root){
-  try{return fs.readdirSync(root,{withFileTypes:true}).filter(entry=>entry.isDirectory()).map(entry=>path.join(root,entry.name));}catch{return[];}
+  return fs.readdirSync(root,{withFileTypes:true}).filter(entry=>entry.isDirectory()).map(entry=>path.join(root,entry.name));
 }
 function explicitPatientDirectory(root,payload){
   const values=[payload.patientDir,payload.patientPath,payload.archivePatientPath,payload.patientFolderPath,payload.folderPath,payload.patientFolder].filter(Boolean);
@@ -45,32 +51,23 @@ function explicitPatientDirectory(root,payload){
   return"";
 }
 function resolvePatientDirectory(root,payload,identity){
-  const explicit=explicitPatientDirectory(root,payload);if(explicit)return{patientDir:explicit,manifest:readPatientManifest(explicit)};
-  const dirs=patientDirectories(root),scored=[];
-  for(const dir of dirs){
-    const manifest=readPatientManifest(dir);if(!manifest)continue;
-    const manifestId=String(manifest.patientId||manifest.id||""),manifestFileNo=String(manifest.fileNo||manifest.fileNumber||""),manifestName=String(manifest.fullName||manifest.name||"");let score=0;
-    if(identity.fileNo&&sameValue(identity.fileNo,manifestFileNo))score+=120;
-    if(identity.patientId&&sameValue(identity.patientId,manifestId))score+=100;
-    if(identity.fullName&&sameValue(identity.fullName,manifestName))score+=30;
-    if(score>=100)scored.push({patientDir:dir,manifest,score});
-  }
-  if(scored.length){scored.sort((a,b)=>b.score-a.score);return scored[0];}
-
-  const exactNames=[];
-  if(identity.fileNo&&identity.fullName)exactNames.push(`${identity.fileNo} - ${identity.fullName}`,`${identity.fullName} - ${identity.fileNo}`,`${identity.fileNo}_${identity.fullName}`,`${identity.fullName}_${identity.fileNo}`);
-  for(const name of exactNames){const found=dirs.find(dir=>sameValue(path.basename(dir),name));if(found)return{patientDir:found,manifest:readPatientManifest(found)};}
-
-  if(identity.fullName){const nameMatches=dirs.filter(dir=>matchPart(path.basename(dir)).includes(matchPart(identity.fullName)));if(nameMatches.length===1)return{patientDir:nameMatches[0],manifest:readPatientManifest(nameMatches[0])};}
-  return null;
+  const explicit=explicitPatientDirectory(root,payload);
+  if(explicit){const manifest=readPatientManifest(explicit);if(!ArchiveIdentity.matches(manifest,identity))throw new Error("المجلد المحدد لا يطابق هوية العيادة والمريض");return{patientDir:explicit,manifest};}
+  const matching=patientDirectories(root).map(patientDir=>({patientDir,manifest:readPatientManifest(patientDir)})).filter(row=>ArchiveIdentity.matches(row.manifest,identity));
+  if(matching.length>1)throw new Error("يوجد مجلدان لهوية المريض نفسها. راجع الأرشيف قبل المتابعة");
+  return matching[0]||null;
 }
 function patientFolder(dir,logicalName){
   const aliases=FOLDER_ALIASES[logicalName]||[logicalName];
   const existing=aliases.map(name=>path.join(dir,name)).find(candidate=>fs.existsSync(candidate)&&fs.statSync(candidate).isDirectory());
-  const folder=existing||path.join(dir,aliases[0]);fs.mkdirSync(folder,{recursive:true});return folder;
+  const folder=existing||path.join(dir,aliases[0]);if(!insideRoot(dir,folder))throw new Error("مجلد الوسائط يشير إلى مسار خارج ملف المريض");fs.mkdirSync(folder,{recursive:true});return folder;
 }
 function uniqueFile(dir,name){const ext=path.extname(name),base=path.basename(name,ext);let candidate=path.join(dir,name),index=2;while(fs.existsSync(candidate)){candidate=path.join(dir,`${base}-${index}${ext}`);index++;}return candidate;}
-function writeJson(file,value){fs.mkdirSync(path.dirname(file),{recursive:true});const temp=`${file}.${process.pid}.tmp`;fs.writeFileSync(temp,JSON.stringify(value,null,2),"utf8");try{fs.renameSync(temp,file)}catch{try{fs.unlinkSync(file)}catch{}fs.renameSync(temp,file)}}
+function writeJson(file,value){
+  fs.mkdirSync(path.dirname(file),{recursive:true});const temp=`${file}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temp,JSON.stringify(value,null,2),{encoding:"utf8",flag:"wx"});
+  try{fs.renameSync(temp,file)}catch(error){try{fs.unlinkSync(temp)}catch{}throw error;}
+}
 function html(value){return String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));}
 function dataUrlParts(value){const match=String(value||"").match(/^data:image\/(png|jpe?g|webp);base64,([\s\S]+)$/i);if(!match)return null;const type=match[1].toLowerCase(),ext=type==="jpeg"||type==="jpg"?".jpg":`.${type}`;return{ext,buffer:Buffer.from(match[2],"base64")};}
 function saveDataUrl(value,basePath){const parsed=dataUrlParts(value);if(!parsed)return"";const file=`${basePath}${parsed.ext}`;fs.writeFileSync(file,parsed.buffer);return file;}
@@ -122,15 +119,17 @@ class PatientArchive{
   snapshot(){return this.current?{...this.current,archiveRoot:this.root(),selected:true}:{archiveRoot:this.root(),selected:false};}
   select(payload={}){
     const root=this.root();fs.mkdirSync(root,{recursive:true});
-    const suppliedFullName=safePart(payload.fullName||payload.name||"",""),suppliedFileNo=safePart(payload.fileNo||payload.fileNumber||"",""),suppliedPatientId=String(payload.patientId||payload.id||suppliedFileNo||"").trim();
-    const resolved=resolvePatientDirectory(root,payload,{fullName:suppliedFullName,fileNo:suppliedFileNo,patientId:suppliedPatientId}),manifest=resolved?.manifest||{};
-    const fullName=safePart(manifest.fullName||manifest.name||suppliedFullName,"مريض"),fileNo=safePart(manifest.fileNo||manifest.fileNumber||suppliedFileNo,""),patientId=String(manifest.patientId||manifest.id||suppliedPatientId||fileNo||fullName).trim();
-    const stableCode=fileNo||(patientId&&!sameValue(patientId,fullName)?safePart(patientId,""):"");
-    const folderName=safePart(stableCode?`${stableCode} - ${fullName}`:fullName),patientDir=resolved?.patientDir||path.join(root,folderName);fs.mkdirSync(patientDir,{recursive:true});
+    const identity=ArchiveIdentity.identity(payload),resolved=resolvePatientDirectory(root,payload,identity),manifest=resolved?.manifest||{};
+    const fullName=safePart(payload.fullName||payload.name||manifest.fullName||manifest.name,"مريض"),fileNo=safePart(payload.fileNo||payload.fileNumber||manifest.fileNo||manifest.fileNumber,""),patientId=identity.patientId,clinicId=identity.clinicId;
+    const patientDir=resolved?.patientDir||path.join(root,ArchiveIdentity.folderKeySync(identity));
+    if(fs.existsSync(patientDir)&&!resolved&&fs.readdirSync(patientDir).length)throw new Error("المجلد المحجوز موجود دون بيان هوية مطابق. راجع الأرشيف");
+    if(!resolved&&patientDirectories(root).some(dir=>{const old=readPatientManifest(dir);return !(old?.clinicId&&(old.patientId||old.id))&&(sameValue(old?.fileNo,fileNo)||sameValue(old?.patientId,patientId)||sameValue(path.basename(dir),`${fileNo} - ${fullName}`));}))throw new Error("يوجد أرشيف قديم مشابه دون هوية عيادة مؤكدة. يحتاج مراجعة ربط المجلد؛ هذا لا يعني أن صور المريض غير موجودة.");
+    fs.mkdirSync(patientDir,{recursive:true});
     const folders={};for(const name of FOLDERS)folders[name]=patientFolder(patientDir,name);
-    const previousSame=this.current&&sameValue(this.current.patientId,patientId);
+    const previousSame=this.current&&ArchiveIdentity.matches(this.current,identity);
     const selectedAt=new Date().toISOString();
     this.current={
+      clinicId,
       patientId,
       fileNo,
       fullName,
@@ -145,7 +144,8 @@ class PatientArchive{
       selectedAt
     };
     writeJson(path.join(patientDir,"patient.json"),{
-      schema:"dtdc-patient-archive-v3",
+      schema:"dtdc-patient-archive-v4",
+      clinicId,
       patientId,
       fileNo,
       fullName,
@@ -170,7 +170,7 @@ class PatientArchive{
   }
   savePlan(plan={}){
     const patient=this.requirePatient(),id=safePart(plan.id||`PLAN-${Date.now()}`),createdAt=plan.createdAt||new Date().toISOString(),dir=path.join(this.plansDir(),id);fs.mkdirSync(dir,{recursive:true});
-    const normalized={...JSON.parse(JSON.stringify(plan)),id,schema:"dtdc-treatment-plan-v3-manual",createdAt,updatedAt:new Date().toISOString(),patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName,doctorName:plan.doctorName||patient.doctorName}};
+    const normalized={...JSON.parse(JSON.stringify(plan)),id,schema:"dtdc-treatment-plan-v3-manual",createdAt,updatedAt:new Date().toISOString(),patient:{clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName,doctorName:plan.doctorName||patient.doctorName}};
     if(plan.sourcePath&&fs.existsSync(plan.sourcePath)){
       normalized.panoramaFileName=path.basename(plan.sourcePath);
       normalized.panoramaPath=plan.sourcePath;
@@ -206,20 +206,20 @@ class PatientArchive{
   loadPlan(id,includeAssets=false){const file=path.join(this.plansDir(),safePart(id),"plan.json");if(!fs.existsSync(file))throw new Error("الخطة غير موجودة");const plan=JSON.parse(fs.readFileSync(file,"utf8"));const source=this.resolvePlanPanorama(plan);const resolved={...plan,panoramaPath:source||plan.panoramaPath||"",sourcePath:source||plan.sourcePath||"",panoramaMissing:!source};if(!includeAssets)return resolved;return{...resolved,sourceDataUrl:fileDataUrl(source),annotatedImageDataUrl:"",stages:(plan.stages||[]).map(stage=>({...stage,illustrationDataUrl:fileDataUrl(stage.illustrationPath)}))};}
   saveLivePresentation(dataUrl){this.requirePatient();const parsed=dataUrlParts(dataUrl);if(!parsed)throw new Error("صورة العرض غير صالحة");const dir=path.join(this.app.getPath("userData"),"PresentationCache");fs.mkdirSync(dir,{recursive:true});const file=path.join(dir,`live-presentation${parsed.ext}`);fs.writeFileSync(file,parsed.buffer);return file;}
   assistantSessionsDir(){return this.requirePatient().folders.AssistantSessions;}
-  saveAssistantContext(context={}){const patient=this.requirePatient(),value={...JSON.parse(JSON.stringify(context)),archivedAt:new Date().toISOString(),patient:{...(context.patient||{}),patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName}};writeJson(path.join(this.assistantSessionsDir(),"active-context.json"),value);return value;}
+  saveAssistantContext(context={}){const patient=this.requirePatient(),value={...JSON.parse(JSON.stringify(context)),archivedAt:new Date().toISOString(),patient:{...(context.patient||{}),clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName}};writeJson(path.join(this.assistantSessionsDir(),"active-context.json"),value);return value;}
   saveAssistantSession(session={}){
     const patient=this.requirePatient(),sessionId=safePart(session.sessionId||`assistant-${Date.now()}`),planId=safePart(session.planId||"plan"),dir=path.join(this.assistantSessionsDir(),planId);fs.mkdirSync(dir,{recursive:true});
-    const normalized={...JSON.parse(JSON.stringify(session)),schema:"dtdc-assistant-session-v1",sessionId,planId,patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},archivedAt:new Date().toISOString()};
+    const normalized={...JSON.parse(JSON.stringify(session)),schema:"dtdc-assistant-session-v1",sessionId,planId,patient:{clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},archivedAt:new Date().toISOString()};
     const file=uniqueFile(dir,`${safePart(normalized.completedAt||normalized.startedAt||new Date().toISOString()).replace(/[: ]/g,"-")}-${sessionId}.json`);writeJson(file,normalized);return{...normalized,file};
   }
   saveAssistantEvent(event={}){
     const patient=this.requirePatient(),planId=safePart(event.planId||event.plan||"quick"),eventId=safePart(event.id||event.eventId||`event-${Date.now()}-${crypto.randomUUID().slice(0,8)}`),dir=path.join(this.assistantSessionsDir(),planId,"events");fs.mkdirSync(dir,{recursive:true});
-    const normalized={...JSON.parse(JSON.stringify(event)),schema:"dtdc-assistant-event-v1",id:eventId,eventId,planId,patientId:patient.patientId,fileNo:patient.fileNo,patientName:patient.fullName,at:String(event.at||new Date().toISOString()),archivedAt:new Date().toISOString()};
+    const normalized={...JSON.parse(JSON.stringify(event)),schema:"dtdc-assistant-event-v1",id:eventId,eventId,planId,clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,patientName:patient.fullName,at:String(event.at||new Date().toISOString()),archivedAt:new Date().toISOString()};
     const file=path.join(dir,`${eventId}.json`);if(!fs.existsSync(file))writeJson(file,normalized);return{...normalized,file};
   }
   saveAssistantStage(stage={}){
     const patient=this.requirePatient(),planId=safePart(stage.planId||"plan"),dir=path.join(this.assistantSessionsDir(),planId);fs.mkdirSync(dir,{recursive:true});
-    const file=path.join(dir,"plan-progress.json");let progress={schema:"dtdc-plan-progress-v1",patientId:patient.patientId,fileNo:patient.fileNo,planId,stages:{},history:[]};
+    const file=path.join(dir,"plan-progress.json");let progress={schema:"dtdc-plan-progress-v1",clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,planId,stages:{},history:[]};
     try{if(fs.existsSync(file))progress={...progress,...JSON.parse(fs.readFileSync(file,"utf8"))}}catch{}
     progress.serviceId=String(stage.serviceId||progress.serviceId||"");progress.serviceName=String(stage.serviceName||progress.serviceName||"");
     progress.progress=Math.max(0,Math.min(100,Number(stage.progress||progress.progress||0)||0));progress.status=progress.progress>=100?"ready_to_close":progress.progress>0?"active":String(progress.status||"active");
@@ -229,21 +229,37 @@ class PatientArchive{
   }
   saveAssistantResumeState(payload={}){
     const patient=this.requirePatient(),planId=safePart(payload.planId||"plan"),dir=path.join(this.assistantSessionsDir(),planId);fs.mkdirSync(dir,{recursive:true});
-    const value={schema:"dtdc-plan-resume-v2",patientId:patient.patientId,fileNo:patient.fileNo,planId:String(payload.planId||planId),serviceId:String(payload.serviceId||""),serviceName:String(payload.serviceName||""),progress:Math.max(0,Math.min(100,Number(payload.progress||0)||0)),completedActions:Math.max(0,Number(payload.completedActions||0)||0),totalActions:Math.max(0,Number(payload.totalActions||0)||0),reachedStage:String(payload.reachedStage||""),resumeState:payload.resumeState&&typeof payload.resumeState==="object"?JSON.parse(JSON.stringify(payload.resumeState)):{},updatedAt:new Date().toISOString()};
+    const value={schema:"dtdc-plan-resume-v2",clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,planId:String(payload.planId||planId),serviceId:String(payload.serviceId||""),serviceName:String(payload.serviceName||""),progress:Math.max(0,Math.min(100,Number(payload.progress||0)||0)),completedActions:Math.max(0,Number(payload.completedActions||0)||0),totalActions:Math.max(0,Number(payload.totalActions||0)||0),reachedStage:String(payload.reachedStage||""),resumeState:payload.resumeState&&typeof payload.resumeState==="object"?JSON.parse(JSON.stringify(payload.resumeState)):{},updatedAt:new Date().toISOString()};
     const file=path.join(dir,"plan-resume.json");writeJson(file,value);return{...value,file};
   }
   saveAssistantPlanClosure(closure={}){
     const patient=this.requirePatient(),planId=safePart(closure.planId||"plan"),dir=path.join(this.assistantSessionsDir(),planId);fs.mkdirSync(dir,{recursive:true});
-    const value={schema:"dtdc-plan-closure-v1",patientId:patient.patientId,fileNo:patient.fileNo,planId:String(closure.planId||planId),serviceId:String(closure.serviceId||""),serviceName:String(closure.serviceName||""),status:"done",doctorName:String(closure.doctorName||""),reason:String(closure.reason||"closed_by_doctor"),closedAt:String(closure.closedAt||new Date().toISOString())};
+    const value={schema:"dtdc-plan-closure-v1",clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,planId:String(closure.planId||planId),serviceId:String(closure.serviceId||""),serviceName:String(closure.serviceName||""),status:"done",doctorName:String(closure.doctorName||""),reason:String(closure.reason||"closed_by_doctor"),closedAt:String(closure.closedAt||new Date().toISOString())};
     const file=path.join(dir,"plan-closed.json");writeJson(file,value);return{...value,file};
   }
   reconcileAssistantContext(context={}){
-    this.requirePatient();const source=JSON.parse(JSON.stringify(context||{})),closedPlans=[];
+    const patient=this.requirePatient(),source=JSON.parse(JSON.stringify(context||{})),closedPlans=[];
+    if(!ArchiveIdentity.matches(source.patient,patient))throw new Error('هوية سياق المريض لا تطابق الأرشيف');
     source.plans=(Array.isArray(source.plans)?source.plans:[]).filter(plan=>{
       const dir=path.join(this.assistantSessionsDir(),safePart(plan.planId||"plan")),closureFile=path.join(dir,"plan-closed.json"),progressFile=path.join(dir,"plan-progress.json"),resumeFile=path.join(dir,"plan-resume.json");
-      if(fs.existsSync(closureFile)){try{const closure=JSON.parse(fs.readFileSync(closureFile,"utf8"));closedPlans.push({...closure,planId:String(plan.planId),serviceId:plan.serviceId,serviceName:plan.serviceName,target:plan.target});return false}catch{}}
-      if(fs.existsSync(progressFile)){try{const progress=JSON.parse(fs.readFileSync(progressFile,"utf8")),saved=progress.stages&&typeof progress.stages==="object"?progress.stages:{};(plan.stages||[]).forEach(stage=>{const item=saved[String(stage.stageId)];if(item){stage.done=Boolean(item.completed);stage.status=String(item.status||stage.status||"completed");stage.completedAt=String(item.completedAt||stage.completedAt||"");stage.summary=String(item.summary||stage.summary||"")}});const total=(plan.stages||[]).length,done=(plan.stages||[]).filter(stage=>stage.done).length;plan.progress=total?Math.round(done*100/total):0;plan.status=total&&done===total?"ready_to_close":done?"active":plan.status}catch{}}
-      if(fs.existsSync(resumeFile)){try{const resume=JSON.parse(fs.readFileSync(resumeFile,"utf8"));plan.resumeState=resume.resumeState||{};plan.progress=Math.max(Number(plan.progress||0),Number(resume.progress||0));plan.completedActions=Number(resume.completedActions||0);plan.totalActions=Number(resume.totalActions||0);plan.reachedStage=String(resume.reachedStage||"");plan.updatedAt=String(resume.updatedAt||plan.updatedAt||"");if(plan.progress>=100)plan.status="ready_to_close";else if(plan.progress>0)plan.status="active"}catch{}}
+      const cutoff=isoTime(plan.updatedAt),valid=row=>ArchiveIdentity.matches(row,patient)&&String(row.planId)===String(plan.planId);
+      const closure=readJson(closureFile,null);
+      if(valid(closure)&&isoTime(closure.closedAt)>0&&isoTime(closure.closedAt)>=cutoff){closedPlans.push({...closure,serviceId:plan.serviceId,serviceName:plan.serviceName,target:plan.target});return false}
+      const progress=readJson(progressFile,null);
+      if(valid(progress)&&isoTime(progress.updatedAt)>0&&isoTime(progress.updatedAt)>=cutoff){
+        const saved=progress.stages&&typeof progress.stages==='object'?progress.stages:{};
+        for(const stage of plan.stages||[]){const item=saved[String(stage.stageId)];if(item&&isoTime(item.updatedAt||item.completedAt)>=cutoff){stage.done=Boolean(item.completed);stage.status=String(item.status||'completed');stage.completedAt=String(item.completedAt||'');stage.summary=String(item.summary||'')}}
+        const total=(plan.stages||[]).length,done=(plan.stages||[]).filter(stage=>stage.done).length;
+        plan.progress=total?Math.round(done*100/total):0;plan.status=total&&done===total?'ready_to_close':done?'active':plan.status;
+        plan.assistantUpdatedAt=progress.updatedAt;
+      }
+      const resume=readJson(resumeFile,null);
+      if(valid(resume)&&isoTime(resume.updatedAt)>0&&isoTime(resume.updatedAt)>=cutoff){
+        plan.resumeState=resume.resumeState||{};plan.progress=Math.max(Number(plan.progress||0),Number(resume.progress||0));plan.completedActions=Number(resume.completedActions||0);plan.totalActions=Number(resume.totalActions||0);plan.reachedStage=String(resume.reachedStage||'');
+        if(isoTime(resume.updatedAt)>isoTime(plan.assistantUpdatedAt))plan.assistantUpdatedAt=resume.updatedAt;
+        if(plan.progress>=100)plan.status='ready_to_close';else if(plan.progress>0)plan.status='active';
+      }
+      if(isoTime(plan.assistantUpdatedAt)>cutoff)plan.updatedAt=plan.assistantUpdatedAt;
       return true;
     });
     source.closedPlans=closedPlans;return source;
@@ -254,7 +270,7 @@ class PatientArchive{
     const type=String(media.mimeType||"").toLowerCase(),fallbackExt=type.includes("png")?".png":type.includes("webp")?".webp":type.includes("jpeg")||type.includes("jpg")?".jpg":type.includes("mp4")?".mp4":type.includes("webm")?".webm":type.includes("audio")?".m4a":".bin";
     const rawName=safePart(media.fileName||`${media.kind||"media"}-${Date.now()}${fallbackExt}`),name=path.extname(rawName)?rawName:`${rawName}${fallbackExt}`,file=uniqueFile(dir,name);fs.writeFileSync(file,buffer);
     const context=media.clinicalContext&&typeof media.clinicalContext==="object"&&!Array.isArray(media.clinicalContext)?JSON.parse(JSON.stringify(media.clinicalContext)):{};
-    const metadata={schema:"dtdc-assistant-media-v1",patientId:patient.patientId,fileNo:patient.fileNo,planId,sessionId,serviceId:String(context.serviceId||""),treatment:String(context.treatment||""),tooth:String(context.tooth||""),stage:String(context.stage||""),captureContext:String(context.captureContext||""),captureType:String(context.captureType||media.kind||"other"),kind:String(media.kind||"other"),mimeType:String(media.mimeType||"application/octet-stream"),fileName:path.basename(file),bytes:buffer.length,createdAt:new Date().toISOString(),clinicalContext:context};writeJson(`${file}.json`,metadata);return{...metadata,file};
+    const metadata={schema:"dtdc-assistant-media-v1",clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,planId,sessionId,serviceId:String(context.serviceId||""),treatment:String(context.treatment||""),tooth:String(context.tooth||""),stage:String(context.stage||""),captureContext:String(context.captureContext||""),captureType:String(context.captureType||media.kind||"other"),kind:String(media.kind||"other"),mimeType:String(media.mimeType||"application/octet-stream"),fileName:path.basename(file),bytes:buffer.length,createdAt:new Date().toISOString(),clinicalContext:context};writeJson(`${file}.json`,metadata);return{...metadata,file};
   }
   archiveCategories(){return[{id:"all",label:"الكل"},{id:"Panorama",label:"بانوراما"},{id:"Photos",label:"صور عادية"}];}
   listArchive(category="all"){
@@ -262,7 +278,7 @@ class PatientArchive{
     const add=(file,logical)=>{if(file.endsWith(".json")||file.endsWith(".sopix14"))return;let stat;try{stat=fs.statSync(file)}catch{return}const ext=path.extname(file).toLowerCase(),kind=IMAGE_EXTENSIONS.has(ext)?"image":AUDIO_EXTENSIONS.has(ext)?"audio":"file";if(kind!=="image")return;const ordinaryLogical=["Before","After","Intraoral","Photos","Other"].includes(logical)?"Photos":logical;if(requested!=="all"&&requested!==ordinaryLogical)return;items.push({id:crypto.createHash("sha1").update(file).digest("hex").slice(0,16),category:ordinaryLogical,kind,name:path.basename(file),path:file,relativePath:path.relative(patient.patientDir,file),size:stat.size,modifiedAt:stat.mtimeMs,mimeType:mime.lookup(file)||"application/octet-stream"});};
     for(const logical of CORE_MEDIA_FOLDERS)for(const file of walkFiles(patient.folders[logical]))add(file,logical);
     for(const file of walkFiles(patient.folders.AssistantSessions))if(file.split(path.sep).includes("media"))add(file,"AssistantMedia");
-    return{patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},categories:this.archiveCategories(),items:items.sort((a,b)=>b.modifiedAt-a.modifiedAt)};
+    return{patient:{clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},categories:this.archiveCategories(),items:items.sort((a,b)=>b.modifiedAt-a.modifiedAt)};
   }
   listClinicalPlans(){
     const patient=this.requirePatient(),root=patient.folders.AssistantSessions,plans=new Map(),active=readJson(path.join(root,"active-context.json"),{});
@@ -275,10 +291,10 @@ class PatientArchive{
       const resumedProgress=Number(resume?.progress||0),planProgress=Math.max(Number(previous.progress||0),Number(progress?.progress||0),resumedProgress);
       plans.set(entry.name,{planId:entry.name,title:String(previous.title||resume?.serviceName||latest.treatment||latest.serviceName||progress?.serviceName||closure?.serviceName||lastEvent.treatment||latest.serviceId||progress?.serviceId||closure?.serviceId||entry.name),serviceId:String(previous.serviceId||resume?.serviceId||latest.serviceId||progress?.serviceId||closure?.serviceId||lastEvent.serviceId||""),status:closure?"closed":planProgress>=100?"ready_to_close":String(previous.status||latest.status||progress?.status||"active"),progress:planProgress,reachedStage:String(resume?.reachedStage||""),closedAt:closure?.closedAt||"",lastActivityAt:closure?.closedAt||lastEvent.at||resume?.updatedAt||latest.completedAt||latest.archivedAt||progress?.updatedAt||previous.lastActivityAt||"",sessions:sessions.length,events:uniqueEventIds.size+(progress?.history?.length||0),media});
     }
-    return{patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},plans:[...plans.values()].sort((a,b)=>isoTime(b.lastActivityAt)-isoTime(a.lastActivityAt))};
+    return{patient:{clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},plans:[...plans.values()].sort((a,b)=>isoTime(b.lastActivityAt)-isoTime(a.lastActivityAt))};
   }
   clinicalPlanDetail(planId){
-    const patient=this.requirePatient(),dir=path.join(patient.folders.AssistantSessions,safePart(planId));if(!insideRoot(patient.folders.AssistantSessions,dir))throw new Error("سجل الخطة غير صالح");if(!fs.existsSync(dir))return{planId:String(planId),patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},events:[],images:[]};
+    const patient=this.requirePatient(),dir=path.join(patient.folders.AssistantSessions,safePart(planId));if(!insideRoot(patient.folders.AssistantSessions,dir))throw new Error("سجل الخطة غير صالح");if(!fs.existsSync(dir))return{planId:String(planId),patient:{clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},events:[],images:[]};
     const events=[],images=[],resume=readJson(path.join(dir,"plan-resume.json"),{}),progressRecord=readJson(path.join(dir,"plan-progress.json"),{}),closure=readJson(path.join(dir,"plan-closed.json"),null);
     const appendEvent=(event,fallbackAt="")=>events.push({id:String(event.id||event.eventId||crypto.randomUUID()),at:String(event.at||event.completedAt||event.archivedAt||fallbackAt||""),label:eventLabel(event),summary:String(event.summary||eventLabel(event)),kind:String(event.kind||event.type||"event"),stage:String(event.stage||event.screenId||""),screenTitle:String(event.screenTitle||""),tooth:String(event.tooth||""),canal:String(event.canal||event.channel||""),details:event.details&&typeof event.details==="object"?event.details:{...event},mediaPath:String(event.mediaPath||"")});
     for(const file of walkFiles(dir)){
@@ -298,7 +314,7 @@ class PatientArchive{
     const timeline=[...deduped.values()],notes=timeline.filter(item=>item.kind==="note"||item.kind==="diagnosis").map(item=>({at:item.at,text:String(item.details?.text||item.summary||"")})),anesthesia=timeline.filter(item=>item.kind==="anesthesia").reduce((sum,item)=>sum+(Number(item.details?.quantity??item.details?.cartridge)||0),0),restorationLabels={amalgam:"ملغم",a1:"كومبوزيت A1",a2:"كومبوزيت A2",a3:"كومبوزيت A3",b1:"كومبوزيت B1",b2:"كومبوزيت B2",de:"كومبوزيت DE",composite:"كومبوزيت",flowable:"سيال","glass-ionomer":"غلاس أيونومر",glass:"غلاس"};
     const restorationEvent=timeline.filter(item=>item.kind==="materials_selected"&&(item.details?.group==="permanent"||item.details?.group==="chamber")).at(-1),restorationValues=Array.isArray(restorationEvent?.details?.materials)?restorationEvent.details.materials:[restorationEvent?.details?.materials].filter(Boolean),finalRestoration=restorationValues.map(value=>restorationLabels[value]||String(value)).join("، ");
     const recordedDuration=timeline.filter(item=>item.kind==="session_finished"||item.kind==="plan_completed").reduce((sum,item)=>sum+(Number(item.details?.durationMs)||0),0),resumeDuration=Number(resume?.resumeState?.totalTreatmentMs||0),lastEvent=timeline.at(-1)||{},serviceId=String(resume.serviceId||resume.resumeState?.activePlan||""),report={progress:Math.max(Number(resume.progress||0),Number(progressRecord.progress||0)),reachedStage:String(resume.reachedStage||lastEvent.screenTitle||lastEvent.stage||"لم تبدأ بعد"),totalTreatmentMs:Math.max(recordedDuration,resumeDuration),anestheticQuantity:anesthesia,anestheticUnit:"أمبولة",finalRestoration:finalRestoration||"غير مسجل",notes,showTreatmentMetrics:!["new-diagnosis","quick-sync"].includes(serviceId),status:closure?"closed":Number(resume.progress||0)>=100?"ready_to_close":"active"};
-    const sortedImages=images.sort((a,b)=>isoTime(b.createdAt)-isoTime(a.createdAt));return{planId:String(planId),title:String(resume.serviceName||timeline.find(item=>item.treatment)?.treatment||planId),patient:{patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},report,events:timeline,images:sortedImages,ordinaryImages:sortedImages.filter(item=>item.category==="ordinary"),xrayImages:sortedImages.filter(item=>item.category==="xray")};
+    const sortedImages=images.sort((a,b)=>isoTime(b.createdAt)-isoTime(a.createdAt));return{planId:String(planId),title:String(resume.serviceName||timeline.find(item=>item.treatment)?.treatment||planId),patient:{clinicId:patient.clinicId,patientId:patient.patientId,fileNo:patient.fileNo,fullName:patient.fullName},report,events:timeline,images:sortedImages,ordinaryImages:sortedImages.filter(item=>item.category==="ordinary"),xrayImages:sortedImages.filter(item=>item.category==="xray")};
   }
   archivePreview(file){
     const patient=this.requirePatient(),target=path.resolve(String(file||""));if(!insideRoot(patient.patientDir,target)||!fs.existsSync(target)||!fs.statSync(target).isFile())throw new Error("الملف ليس ضمن أرشيف المريض");

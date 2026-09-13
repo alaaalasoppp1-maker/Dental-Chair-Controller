@@ -269,18 +269,22 @@ ${warnings.join("\n")}
     const saved=await chairAPI.savePlan(planPayload());planId=saved.id;await refreshPlans();if(showAll)await showPlanOnDisplay("");notify(showAll?"تم حفظ الخطة وعرضها":"تم حفظ الخطة داخل ملف المريض");return saved;
   }catch(error){notify(error);return null;}
 }
-async function showPlanOnDisplay(){
-  if(!sourceImage)return notify("اختر صورة أولاً");
-  await chairAPI.showPlan(planPayload());
+async function showPlanOnDisplay(stageId=""){
+  if(!sourceImage)return notify("اختر صورة أولاً");const payload=planPayload();
+  if(stageId){const stage=stages.find(item=>item.id===stageId);if(!stage)return notify("اختر مرحلة أولاً");await chairAPI.showPlan({...payload,title:`${payload.title} · ${stage.title}`,focusStageId:stage.id});}
+  else await chairAPI.showPlan({...payload,focusStageId:""});
 }
 
 function renderPresentation(){
-  if(!$("presentationStages"))return;storeStage();const total=totals(stages),currency=$("planCurrency").value;
-  $("presentationPatient").textContent=appState.patient?.fullName||"ضيفنا الكريم";$("presentationTitle").textContent=$("planTitle").value||"خطة العلاج المقترحة";$("presentationTotal").textContent=`${total.cost.toLocaleString("en")} ${currency}`;$("presentationSessions").textContent=total.sessions;
-  const image=$("presentationImage");if(sourceImage){image.src=annotatedDataUrl("");image.style.display="block";image.nextElementSibling.style.display="none";}else{image.style.display="none";image.nextElementSibling.style.display="block";}
-  const visualHost=document.querySelector(".presentation-visuals"),stageImage=$("presentationStageImage");visualHost.classList.remove("focused");stageImage.style.display="none";stageImage.nextElementSibling.style.display="grid";
-  $("presentationStages").innerHTML=stages.map((stage,index)=>`<article class="presentation-stage" style="--stage-color:${escapeHtml(stage.color)}"><b>${index+1}. ${escapeHtml(stage.title)}</b><p>${escapeHtml(stage.description)}</p><small>${escapeHtml(stageTeeth(stage).join("، ")||"دون تحديد أسنان")} · ${stage.sessions||1} جلسة · ${escapeHtml(stage.duration||"مدة مرنة")}</small></article>`).join("");
+  if(!$("presentationStages"))return;storeStage();const focused=stages.find(stage=>stage.id===presentationFocusStageId)||null,list=focused?[focused]:stages,total=totals(list),currency=$("planCurrency").value;
+  $("presentationPatient").textContent=appState.patient?.fullName||"ضيفنا الكريم";$("presentationTitle").textContent=$("planTitle").value||"خطة العلاج المقترحة";$("presentationTotal").textContent=`${total.cost.toLocaleString("en")} ${currency}`;$("presentationSessions").textContent=total.sessions;$("presentationFocusLabel").textContent=focused?focused.title:"العرض الكامل";
+  const image=$("presentationImage");if(sourceImage){image.src=annotatedDataUrl(focused?.id||"");image.style.display="block";image.nextElementSibling.style.display="none";}else{image.style.display="none";image.nextElementSibling.style.display="block";}
+  const visualHost=document.querySelector(".presentation-visuals"),illustrationHost=$("presentationStageIllustration"),stageImage=$("presentationStageImage"),illustration=focused?illustrationById(focused.illustrationId):null;visualHost.classList.toggle("focused",Boolean(focused));
+  if(focused&&illustration?.dataUrl){stageImage.src=illustration.dataUrl;stageImage.style.display="block";stageImage.nextElementSibling.style.display="none";}else{stageImage.style.display="none";stageImage.nextElementSibling.style.display="grid";}
+  $("presentationStages").innerHTML=list.map(stage=>`<article class="presentation-stage ${focused?.id===stage.id?"active":""}" data-present-stage="${escapeHtml(stage.id)}" style="--stage-color:${escapeHtml(stage.color)}"><b>${stages.indexOf(stage)+1}. ${escapeHtml(stage.title)}</b><p>${escapeHtml(stage.description)}</p><small>${escapeHtml(stageTeeth(stage).join("، ")||"دون تحديد أسنان")} · ${stage.sessions||1} جلسة · ${escapeHtml(stage.duration||"مدة مرنة")}</small></article>`).join("");
+  document.querySelectorAll("[data-present-stage]").forEach(card=>card.onclick=async()=>{presentationFocusStageId=card.dataset.presentStage;renderPresentation();await showPlanOnDisplay(presentationFocusStageId);});
   const checks=[{ok:patientReady(),text:"ملف المريض مرتبط"},{ok:Boolean(sourceImage),text:"الصورة الأصلية موجودة"},{ok:Boolean(annotations.length),text:`${annotations.length} رسومات يدوية`},{ok:Boolean(stages.length),text:`${stages.length} مراحل علاجية`},{ok:stages.every(stage=>stage.title&&stage.sessions>0),text:"بيانات المراحل مكتملة"}];$("presentationChecklist").innerHTML=checks.map(check=>`<li class="${check.ok?"ready":"warning"}">${check.ok?"✓":"!"} ${check.text}</li>`).join("");
+  $("presentFocusedStage").disabled=!focused;
 }
 
 async function openPreviousPlans(){
@@ -348,8 +352,14 @@ $("clearStageIllustration").onclick=()=>{const stage=currentStage();if(!stage)re
 $("chooseStageBackground").onclick=async()=>{try{const file=await chairAPI.chooseStageBackground();if(file){$("stageBackgroundPath").value=file;storeStage();renderPresentation();}}catch(error){notify(error);}};
 $("clearStageBackground").onclick=()=>{const stage=currentStage();if(!stage)return;stage.backgroundPath="";$("stageBackgroundPath").value="";renderPresentation();};
 $("savePlan").onclick=()=>savePlan(false);$("presentPlan").onclick=()=>savePlan(true);$("newPlan").onclick=()=>{if(!annotations.length||confirm("بدء خطة جديدة ومسح الرسومات الحالية؟"))newPlan();};
+$("presentAllStages").onclick=async()=>{presentationFocusStageId="";renderPresentation();await showPlanOnDisplay("");};$("presentFocusedStage").onclick=()=>presentationFocusStageId?showPlanOnDisplay(presentationFocusStageId):notify("اختر مرحلة من المعاينة");
+$("planStoryStart").onclick=()=>chairAPI.navigatePlan("home");
 $("planStoryPrevious").onclick=()=>chairAPI.navigatePlan("previous");
 $("planStoryNext").onclick=()=>chairAPI.navigatePlan("next");
+$("planStoryEnd").onclick=()=>chairAPI.navigatePlan("end");
+$("planStoryEnter").onclick=()=>chairAPI.navigatePlan("toggle");
+let planAutoPaused=false;
+$("planAutoToggle").onclick=()=>{planAutoPaused=!planAutoPaused;$("planAutoToggle").textContent=planAutoPaused?"▶ متابعة التلقائي":"⏸ إيقاف التلقائي";chairAPI.navigatePlan(planAutoPaused?"pause_auto":"resume_auto");};
 document.addEventListener("keydown",event=>{if(event.key==="Escape"&&$("clinicalStudio").classList.contains("open")){event.preventDefault();closeStudio();}});
 chairAPI.onOpenClinicalStudio?.(step=>openStudio(step||"draw"));
 function applyPatientState(state){

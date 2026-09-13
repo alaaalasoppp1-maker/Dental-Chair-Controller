@@ -11,6 +11,7 @@ let sharp = null;
 try { sharp = require("sharp"); } catch { sharp = null; }
 const {WebSocketServer, WebSocket} = require("ws");
 const {getLocalIPv4} = require("./discovery");
+const {createHttpPolicy}=require("./http-policy");
 const {CLIENT_ROLES,TRANSPORT_PROTOCOL,normalizeRole}=require("../shared/clinical-contract");
 const {version:CONTROLLER_VERSION}=require("../../package.json");
 
@@ -178,7 +179,7 @@ class ChairServer {
 
   setSession(id){
     const next=String(id||"");
-    if(next!==this.sessionId)this.pending.clear();
+    if(next!==this.sessionId){this.pending.clear();this.displayCommands=[];this.currentState=null;this.media.clear();}
     this.sessionId=next;
     this.emit();
   }
@@ -204,17 +205,10 @@ class ChairServer {
 
   async start() {
     const app=express();
-    app.use((req,res,next)=>{
-      res.setHeader("Access-Control-Allow-Origin","*");
-      res.setHeader("Access-Control-Allow-Headers","Content-Type, X-DTDC-Device-Id, X-DTDC-Display, X-DTDC-File-Name, X-DTDC-Mime-Type, X-DTDC-Media-Kind, X-DTDC-Patient-Id, X-DTDC-Plan-Id, X-DTDC-Session-Id, X-DTDC-Clinical-Context");
-      res.setHeader("Access-Control-Allow-Methods","GET,POST,OPTIONS");
-      res.setHeader("Access-Control-Allow-Private-Network","true");
-      if(req.method==="OPTIONS")return res.sendStatus(204);
-      next();
-    });
+    const httpPolicy=createHttpPolicy({addresses:getLocalIPv4});app.disable('x-powered-by');app.use(httpPolicy.middleware);
     const isLoopback=req=>["127.0.0.1","::1","::ffff:127.0.0.1"].includes(String(req.socket.remoteAddress||""));
     app.use(express.json({limit:"4mb"}));
-    app.get("/health",(_req,res)=>res.json({ok:true,product:"DentalChairController",protocol:TRANSPORT_PROTOCOL,contract:"dtdc-clinical-link-v1",sessionId:this.sessionId,...this.state()}));
+    app.get("/health",(_req,res)=>res.json({ok:true,product:"DentalChairController",protocol:TRANSPORT_PROTOCOL,contract:"dtdc-clinical-link-v1",controllerVersion:CONTROLLER_VERSION}));
     app.post("/assistant/presence",(req,res)=>{
       try{const assistant=this.registerAssistant(req.body||{},req.socket.remoteAddress||"");res.json({ok:true,assistant,selected:assistant.deviceId===this.selectedAssistantId,selectedAssistantId:this.selectedAssistantId,contextAvailable:Boolean(this.assistantContext),protocol:TRANSPORT_PROTOCOL});}catch(error){res.status(400).json({ok:false,error:String(error?.message||error)});}
     });
@@ -264,11 +258,17 @@ class ChairServer {
       try{this.requireSelectedAssistant(req,req.body||{});const displayClients=this.send({type:"hide"},{important:true,warn:false,targetRole:CLIENT_ROLES.DISPLAY});res.json({ok:true,result:{displayClients}});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}
     });
     app.post("/assistant/media",express.raw({type:"application/octet-stream",limit:"32mb"}),async(req,res)=>{
-      try{this.requireSelectedAssistant(req,{});const result=await this.onAssistantMedia({buffer:req.body,fileName:req.get("x-dtdc-file-name")||"",mimeType:req.get("x-dtdc-mime-type")||"application/octet-stream",kind:req.get("x-dtdc-media-kind")||"other",patientId:req.get("x-dtdc-patient-id")||"",planId:req.get("x-dtdc-plan-id")||"",sessionId:req.get("x-dtdc-session-id")||"",clinicalContext:decodeClinicalContext(req.get("x-dtdc-clinical-context")||""),display:req.get("x-dtdc-display")==="1"});res.json({ok:true,result});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}
+      try{this.requireSelectedAssistant(req,{});const result=await this.onAssistantMedia({buffer:req.body,fileName:req.get("x-dtdc-file-name")||"",mimeType:req.get("x-dtdc-mime-type")||"application/octet-stream",kind:req.get("x-dtdc-media-kind")||"other",patientId:req.get("x-dtdc-patient-id")||"",planId:req.get("x-dtdc-plan-id")||"",sessionId:req.get("x-dtdc-session-id")||"",chairSessionId:req.get("x-dtdc-chair-session-id")||"",clinicalContext:decodeClinicalContext(req.get("x-dtdc-clinical-context")||""),display:req.get("x-dtdc-display")==="1"});res.json({ok:true,result});}catch(error){res.status(error.statusCode||400).json({ok:false,error:String(error?.message||error)});}
     });
     app.get("/clinical/events",(req,res)=>{
       if(!isLoopback(req))return res.status(403).json({ok:false,error:"loopback_only"});
-      try{const since=Math.max(0,Number(req.query.since||0)||0),events=this.getClinicalEvents({since,patientId:String(req.query.patientId||"")})||[];res.json({ok:true,events,context:this.assistantContext,latestAt:events.reduce((max,event)=>Math.max(max,Number(event.at||event.createdAtMs||0)),since)});}catch(error){res.status(400).json({ok:false,error:String(error?.message||error)});}
+      try{
+        const since=Math.max(0,Number(req.query.since||0)||0),clinicId=String(req.query.clinicId||""),patientId=String(req.query.patientId||"");
+        if(!clinicId||!patientId)return res.status(400).json({ok:false,error:"clinic_and_patient_required"});
+        const batch=this.getClinicalEvents({since,clinicId,patientId,after:req.query.after||0,journalId:String(req.query.journalId||'')})||[],events=Array.isArray(batch)?batch:batch.events||[],active=this.assistantContext?.patient;
+        const context=active?.clinicId===clinicId&&active?.patientId===patientId?this.assistantContext:null;
+        res.json({ok:true,events,context,journal:Array.isArray(batch)?null:batch.journal,latestAt:events.reduce((max,event)=>Math.max(max,Number(event.at||event.createdAtMs||0)),since)});
+      }catch(error){res.status(400).json({ok:false,error:"clinical_events_unavailable"});}
     });
     app.post("/command",async(req,res)=>{
       try{
@@ -285,9 +285,8 @@ class ChairServer {
       if(!entry || !fs.existsSync(entry.path)) return res.sendStatus(404);
       const started=Date.now();
       try {
-        // Media IDs include path, mtime, size and optimization mode, therefore
-        // the URL is content-versioned and safe to cache aggressively.
-        res.setHeader("Cache-Control","public, max-age=31536000, immutable");
+        // Patient media must not remain in a shared browser cache after a session.
+        res.setHeader("Cache-Control","private, no-store");
         res.setHeader("ETag",`\"${req.params.id}\"`);
         if(req.headers["if-none-match"]===`\"${req.params.id}\"`)return res.sendStatus(304);
         res.setHeader("Accept-Ranges","bytes");
@@ -326,7 +325,7 @@ class ChairServer {
       this.server.once("error",onError);this.server.once("listening",onListening);this.server.listen(this.port,"0.0.0.0");
     });
     this.server.on("error",error=>{this.lastDisconnectReason=String(error?.message||error);this.logDiagnostic("error","server_error",{message:this.lastDisconnectReason});this.emit();});
-    this.wss=new WebSocketServer({server:this.server});
+    this.wss=new WebSocketServer({server:this.server,maxPayload:262144,verifyClient:(info,done)=>done(httpPolicy.allowed(info.req)&&httpPolicy.rate(info.req),403)});
     this.wss.on("error",error=>{this.lastDisconnectReason=String(error?.message||error);this.logDiagnostic("error","websocket_server_error",{message:this.lastDisconnectReason});this.emit();});
     this.wss.on("connection",socket=>{
       socket.isAlive=true;
