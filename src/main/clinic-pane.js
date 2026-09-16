@@ -1,0 +1,67 @@
+'use strict';
+const path=require('node:path');
+const {WebContentsView,BrowserWindow,ipcMain,dialog,shell}=require('electron');
+const {clinicURL,ownPage,externalURL}=require('./clinic-pane-policy');
+class ClinicPane {
+  constructor({window,url,onToggle=()=>{},onSession=()=>{},onCommand=()=>{},onEvents=()=>{}}){
+    this.window=window;this.url=clinicURL(url);this.origin=new URL(this.url).origin;this.onToggle=onToggle;this.onSession=onSession;this.open=false;this.pendingPrompt=null;
+    this.onCommand=onCommand;this.onEvents=onEvents;
+    this.view=new WebContentsView({webPreferences:{preload:path.join(__dirname,'clinic-preload.js'),partition:'persist:dtdc-clinic',contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
+    this.view.setBackgroundColor('#f4f8fc');
+    const wc=this.view.webContents;
+    wc.session.setPermissionRequestHandler((_contents,_permission,callback)=>callback(false));
+    wc.setWindowOpenHandler(({url})=>{this.external(url).catch(()=>{});return {action:'deny'};});
+    wc.on('will-navigate',(event,url)=>{if(!ownPage(url,this.origin)){event.preventDefault();this.external(url).catch(()=>{});}});
+    wc.on('will-redirect',(event,url)=>{if(!ownPage(url,this.origin)){event.preventDefault();this.external(url).catch(()=>{});}});
+    wc.on('did-start-navigation',(_event,_url,_isInPlace,isMainFrame)=>{if(isMainFrame)this.onSession(null);});
+    wc.on('did-fail-load',(_event,code)=>{if(code!==-3)this.emit('تعذر تحميل موقع العيادة. تحقق من الإنترنت ثم أعد التحميل.');});
+    wc.on('did-finish-load',()=>{if(ownPage(wc.getURL(),this.origin)){
+      wc.executeJavaScript("window.alert=(m)=>window.DCOSController.alert(String(m));window.confirm=(m)=>window.DCOSController.confirm(String(m));window.prompt=(m,d='')=>window.DCOSController.prompt(String(m),String(d));").catch(()=>{});this.emit('');
+    }});
+    wc.on('before-input-event',(event,input)=>{
+      if(input.type!=='keyDown')return;
+      if(input.key==='Escape'&&(input.control||input.meta)){event.preventDefault();this.show(false);}
+      if((input.control||input.meta)&&!input.alt&&!input.shift&&input.key.toLowerCase()==='p'){event.preventDefault();void this.print();}
+      if((input.control||input.meta)&&!input.alt&&!input.shift&&input.key.toLowerCase()==='s'){event.preventDefault();void wc.executeJavaScript("(async()=>{if(typeof window.saveAll==='function'){await window.saveAll();return true}return false})()").then(saved=>{if(!saved)return this.savePage();}).catch(()=>this.emit('تعذر إتمام الحفظ. راجع حالة المزامنة داخل البرنامج.'));}
+    });
+    window.on('resize',()=>this.bounds());window.on('closed',()=>this.close());
+    this.installIPC();
+  }
+  valid(event){return event.sender===this.view.webContents&&event.senderFrame===this.view.webContents.mainFrame&&ownPage(event.senderFrame?.url||'',this.origin);}
+  emit(message){if(!this.window.isDestroyed())this.window.webContents.send('clinic-pane:state',{open:this.open,url:this.url,message});}
+  bounds(){if(!this.open)return;const [width,height]=this.window.getContentSize();this.view.setBounds({x:0,y:58,width,height:Math.max(0,height-58)});}
+  show(open=true){
+    if(open===this.open)return;this.open=open;
+    if(open){this.window.contentView.addChildView(this.view);this.bounds();if(!this.view.webContents.getURL())this.view.webContents.loadURL(this.url).catch(()=>{});this.view.webContents.focus();}
+    else{this.window.contentView.removeChildView(this.view);this.window.webContents.focus();}
+    this.onToggle(open);this.emit('');
+  }
+  async external(url){return shell.openExternal(externalURL(url));}
+  async print(){if(ownPage(this.view.webContents.getURL(),this.origin))this.view.webContents.print({printBackground:true},()=>{});}
+  async savePage(){const choice=await dialog.showSaveDialog(this.window,{title:'حفظ الصفحة',defaultPath:'clinic-page.html',filters:[{name:'HTML',extensions:['html']}]});if(!choice.canceled&&choice.filePath)await this.view.webContents.savePage(choice.filePath,'HTMLComplete');}
+  installIPC(){
+    ipcMain.handle('clinic:command',async(event,payload)=>{if(!this.valid(event)||!['select_patient','show_patient','clear_patient','open_plan_details','show_appointment_qr'].includes(payload?.action)||JSON.stringify(payload).length>1000000)throw new Error('command_denied');return {ok:!!await this.onCommand(payload)};});
+    ipcMain.handle('clinic:events',(event,query)=>{if(!this.valid(event)||!query||JSON.stringify(query).length>3000)throw new Error('events_denied');return this.onEvents(query);});
+    ipcMain.handle('clinic-pane:toggle',(event,open)=>{if(event.sender!==this.window.webContents&&!this.valid(event))throw new Error('sender_denied');this.show(typeof open==='boolean'?open:!this.open);});
+    ipcMain.handle('clinic-pane:action',(event,action)=>{
+      if(event.sender!==this.window.webContents)throw new Error('sender_denied');const wc=this.view.webContents;
+      if(action==='reload')wc.reload();else if(action==='back'&&wc.navigationHistory.canGoBack())wc.navigationHistory.goBack();else if(action==='forward'&&wc.navigationHistory.canGoForward())wc.navigationHistory.goForward();else if(action==='print')return this.print();else if(action==='save')return this.savePage();else if(action==='external')return this.external(this.url);
+    });
+    ipcMain.handle('clinic:external',(event,url)=>{if(!this.valid(event))throw new Error('sender_denied');return this.external(url);});
+    ipcMain.handle('clinic:session',(event,payload)=>{if(!this.valid(event))throw new Error('sender_denied');this.onSession(payload);return true;});
+    ipcMain.on('clinic:alert',(event,message)=>{if(!this.valid(event)){event.returnValue=null;return;}dialog.showMessageBoxSync(this.window,{type:'info',title:'العيادة',message:String(message).slice(0,10000),buttons:['حسناً']});event.returnValue=null;});
+    ipcMain.on('clinic:confirm',(event,message)=>{if(!this.valid(event)){event.returnValue=false;return;}event.returnValue=dialog.showMessageBoxSync(this.window,{type:'question',title:'تأكيد',message:String(message).slice(0,10000),buttons:['نعم','لا'],defaultId:1,cancelId:1})===0;});
+    ipcMain.on('clinic:prompt',(event,message,value)=>{
+      if(!this.valid(event)||this.pendingPrompt){event.returnValue=null;return;}
+      const child=new BrowserWindow({parent:this.window,modal:true,width:520,height:270,resizable:false,show:false,autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'prompt-preload.js'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
+      this.pendingPrompt=child;let answered=false;
+      const finish=value=>{if(answered)return;answered=true;try{event.returnValue=value;}catch{}this.pendingPrompt=null;ipcMain.removeListener('clinic-prompt:answer',answer);if(!child.isDestroyed())child.close();};
+      const answer=(e,text)=>{if(e.sender===child.webContents)finish(text===null?null:String(text).slice(0,10000));};
+      ipcMain.on('clinic-prompt:answer',answer);child.once('closed',()=>finish(null));
+      child.webContents.once('did-finish-load',()=>{child.webContents.send('clinic-prompt:data',{message:String(message).slice(0,5000),value:String(value||'').slice(0,10000)});child.show();});
+      child.loadFile(path.join(__dirname,'..','renderer','prompt.html'));
+    });
+  }
+  close(){this.pendingPrompt?.close();this.onSession(null);if(!this.view.webContents.isDestroyed())this.view.webContents.close();}
+}
+module.exports={ClinicPane};

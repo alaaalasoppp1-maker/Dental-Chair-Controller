@@ -30,6 +30,7 @@ class SettingsStore {
     this.defaults = {
       sensorFolder: "C:\\Users\\Public\\Documents\\Images SOPRO-Imaging",
       patientArchiveRoot: "",
+      clinicWebUrl: "https://dr-taher-dental-chain.web.app/",
       clinicName: "عيادة د. طاهر",
       chainName: "DR TAHER DENTAL CHAIN",
       displayTitle: "Clinic Display",

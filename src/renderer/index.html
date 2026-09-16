@@ -2,7 +2,19 @@
 <html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Dental Chain Chair Controller</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="clinical-studio.css">
+<link rel="stylesheet" href="clinic-pane.css">
 </head><body>
+<button id="openClinicPane" class="clinic-pane-fab" type="button">البرنامج الرئيسي ◀</button>
+<nav id="clinicPaneToolbar" hidden aria-label="البرنامج الرئيسي">
+  <button type="button" data-clinic-action="close">العودة للكونترولر</button>
+  <button type="button" data-clinic-action="back" title="رجوع">→</button>
+  <button type="button" data-clinic-action="forward" title="تقدم">←</button>
+  <button type="button" data-clinic-action="reload">تحديث</button>
+  <button type="button" data-clinic-action="save">حفظ الصفحة</button>
+  <button type="button" data-clinic-action="print">طباعة</button>
+  <button type="button" data-clinic-action="external">المتصفح</button>
+  <span id="clinicPaneStatus" role="status"></span>
+</nav>
 <button id="openSettings" class="floating settings-fab" title="الإعدادات">⚙</button>
 <button id="openHelp" class="floating help-fab" title="المساعدة">?</button>
 <div id="drawerBackdrop" class="backdrop"></div>
@@ -163,7 +175,7 @@
           </section>
         </section>
         <section id="archiveMediaView" class="archive-mode-view" hidden>
-          <div class="archive-toolbar"><button id="archiveImport" type="button">＋ استيراد صورة</button><span id="archiveCount">0 ملف</span></div>
+          <div class="archive-toolbar"><button id="archiveImport" type="button">＋ استيراد صورة</button><button id="archiveCloudUpload" type="button">رفع أرشيف المريض للسحابة</button><span id="archiveCount">0 ملف</span></div>
           <div class="archive-browser-layout">
             <div id="archiveItems" class="archive-items"><p class="empty-state">لا توجد صور.</p></div>
             <section class="archive-preview"><div class="archive-preview-frame"><img id="archivePreviewImage" alt="معاينة الملف"><audio id="archivePreviewAudio" controls></audio><pre id="archivePreviewRecord"></pre><div id="archivePreviewEmpty">اختر صورة من الأرشيف</div></div><h3 id="archivePreviewName">—</h3><div class="archive-preview-actions"><button id="archiveDisplay" class="primary" type="button">عرض على الشاشة</button><button id="archiveCompare" type="button">إضافة للمقارنة</button><button id="archiveStopDisplay" type="button">إلغاء العرض</button><button id="archiveReveal" type="button">إظهار في المجلد</button><button id="archiveDelete" class="danger" type="button">حذف</button></div></section>
@@ -425,4 +437,4 @@
   </section>
 
   <div id="notice" class="notice"></div>
-</main><script src="app.js"></script><script src="clinical-studio.js"></script></body></html>
+</main><script src="app.js"></script><script src="clinical-studio.js"></script><script src="clinic-pane-ui.js"></script></body></html>

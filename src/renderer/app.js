@@ -1,5 +1,7 @@
 const $=id=>document.getElementById(id);
 let timer,currentState={},shortcutDraft={},shortcutDirty=new Set();
+let archiveReadVersion=0;
+function archiveScope(p=currentState.patient){return JSON.stringify([p?.clinicId,p?.patientId,p?.sessionId]);}
 let archiveCategory="all",archiveMode="plans",archiveSelected=null,archiveCompare=[],clinicalPlanData=null;
 
 const labels={home:"الواجهة الرئيسية",patient:"ترحيب مريض",image:"صورة",gif:"GIF",treatment_gif:"معالجة",treatment_plan:"خطة علاج",appointment_qr:"QR موعد",video:"فيديو",pdf:"PDF",black:"أسود",game:"لعبة"};
@@ -51,6 +53,12 @@ function applyDisplayThemeChoice(theme){
 }
 
 function render(s){
+  if(archiveScope()!==archiveScope(s?.patient)){
+    archiveReadVersion++;closePatientArchive();clinicalPlanData=null;
+    document.querySelectorAll('.clinical-lightbox').forEach(e=>e.remove());
+    $('clinicalTimeline').replaceChildren();$('clinicalPlanImages').replaceChildren();
+    $('archivePreviewImage').removeAttribute('src');$('archivePreviewAudio').pause();$('archivePreviewAudio').removeAttribute('src');
+  }
   currentState=s||{};$("clients").textContent=s.network?.displayClients??s.network?.clients??0;if($("assistantClients"))$("assistantClients").textContent=s.network?.assistantClients||0;$("count").textContent=s.images?.count||0;
   $("position").textContent=s.images?.count?`${s.images.position}/${s.images.count}`:"—";
   $("mode").textContent=labels[s.display?.mode]||s.display?.mode||"ترحيب";
@@ -201,8 +209,8 @@ async function selectArchiveItem(item,button){
   catch(error){note({message:error.message||"تعذر فتح المعاينة",type:"error"})}
 }
 function setArchiveMode(mode){archiveMode=mode==="media"?"media":"plans";const plans=archiveMode==="plans";$("archiveMediaView").hidden=plans;$("archivePlansView").hidden=!plans;$("archivePlansHome").classList.toggle("active",plans);document.querySelectorAll("[data-archive-category]").forEach(button=>button.classList.toggle("active",!plans&&button.dataset.archiveCategory===archiveCategory))}
-function openPatientArchive(){archiveSelected=null;archiveCompare=[];$("patientArchiveModal").classList.add("open");$("patientArchiveModal").setAttribute("aria-hidden","false");$("archiveComparePanel").hidden=true;setArchiveMode("plans");loadArchiveNavigation();loadClinicalPlans()}
-function closePatientArchive(){$("patientArchiveModal").classList.remove("open");$("patientArchiveModal").setAttribute("aria-hidden","true")}
+function openPatientArchive(){archiveSelected=null;archiveCompare=[];$("patientArchiveModal").classList.add("open");$("patientArchiveModal").setAttribute("aria-hidden","false");$("archiveComparePanel").hidden=true;setArchiveMode("plans");loadArchiveNavigation();return loadClinicalPlans()}
+function closePatientArchive(){archiveReadVersion++;$("patientArchiveModal").classList.remove("open");$("patientArchiveModal").setAttribute("aria-hidden","true")}
 async function renderArchiveCompare(){
   const panel=$("archiveComparePanel"),grid=$("archiveCompareGrid");panel.hidden=!archiveCompare.length;grid.innerHTML="";
   for(const item of archiveCompare){const preview=await chairAPI.previewArchive(item.path);const figure=document.createElement("figure");figure.innerHTML=`<img src="${preview.dataUrl}" alt=""><figcaption>${escapeHtml(item.name)}</figcaption>`;grid.appendChild(figure)}
@@ -210,14 +218,16 @@ async function renderArchiveCompare(){
 function clinicalDate(value){return new Date(value).toLocaleDateString("ar-SY",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}
 function clinicalTime(value){return new Date(value).toLocaleTimeString("ar-SY",{hour:"numeric",minute:"2-digit"})}
 async function loadClinicalPlans(){
+  const scope=archiveScope(),version=++archiveReadVersion;
   setArchiveMode("plans");
   $("patientArchiveModal").classList.remove("plan-open");clinicalPlanData=null;
   const list=$("clinicalPlansList"),detail=$("clinicalPlanDetail");detail.hidden=true;list.hidden=false;list.innerHTML='<p class="empty-state">جارِ قراءة سجل الخطط…</p>';
-  try{const data=await chairAPI.listClinicalPlans();$("archivePatientLabel").textContent=`${data.patient.fullName||""}${data.patient.fileNo?` · ${data.patient.fileNo}`:""}`;list.innerHTML="";if(!data.plans.length){list.innerHTML='<p class="empty-state">لا توجد خطط للمريض بعد.</p>';return}data.plans.forEach(plan=>{const closed=plan.status==="closed"||plan.status==="done"||plan.status==="completed",ready=plan.status==="ready_to_close",statusLabel=closed?"منتهية":ready?"جاهزة للإنهاء":"قائمة";const card=document.createElement("button");card.type="button";card.className=`clinical-plan-card status-${closed?"closed":ready?"ready":"active"}`;card.innerHTML=`<small><i></i>${statusLabel}</small><h3>${escapeHtml(plan.title||plan.planId)}</h3><span>${plan.lastActivityAt?clinicalDate(plan.lastActivityAt):"لا يوجد نشاط مسجل بعد"}</span><div class="plan-card-stats"><i>${plan.sessions} جلسة</i><i>${plan.events} حدث</i><i>${plan.media} صورة</i></div>`;card.onclick=()=>openClinicalPlan(plan);list.appendChild(card)})}catch(error){list.innerHTML='<p class="empty-state">تعذر قراءة سجل الخطط.</p>';note({message:error.message||"تعذر فتح سجل الخطط",type:"error"})}
+  try{const data=await chairAPI.listClinicalPlans();if(scope!==archiveScope()||version!==archiveReadVersion)return;$("archivePatientLabel").textContent=`${data.patient.fullName||""}${data.patient.fileNo?` · ${data.patient.fileNo}`:""}`;list.innerHTML="";if(!data.plans.length){list.innerHTML='<p class="empty-state">لا توجد خطط للمريض بعد.</p>';return}data.plans.forEach(plan=>{const closed=plan.status==="closed"||plan.status==="done"||plan.status==="completed",ready=plan.status==="ready_to_close",statusLabel=closed?"منتهية":ready?"جاهزة للإنهاء":"قائمة";const card=document.createElement("button");card.type="button";card.className=`clinical-plan-card status-${closed?"closed":ready?"ready":"active"}`;card.innerHTML=`<small><i></i>${statusLabel}</small><h3>${escapeHtml(plan.title||plan.planId)}</h3><span>${plan.lastActivityAt?clinicalDate(plan.lastActivityAt):"لا يوجد نشاط مسجل بعد"}</span><div class="plan-card-stats"><i>${plan.sessions} جلسة</i><i>${plan.events} حدث</i><i>${plan.media} صورة</i></div>`;card.onclick=()=>openClinicalPlan(plan);list.appendChild(card)})}catch(error){list.innerHTML='<p class="empty-state">تعذر قراءة سجل الخطط.</p>';note({message:error.message||"تعذر فتح سجل الخطط",type:"error"})}
 }
 async function openClinicalPlan(plan){
+  const scope=archiveScope(),version=++archiveReadVersion,request={clinicId:currentState.patient?.clinicId,patientId:currentState.patient?.patientId,sessionId:currentState.patient?.sessionId,planId:plan.planId};
   const list=$("clinicalPlansList"),detail=$("clinicalPlanDetail");list.hidden=true;detail.hidden=false;$("patientArchiveModal").classList.add("plan-open");$("clinicalPlanTitle").textContent=plan.title||"تقرير الخطة";$("clinicalPlanSummary").textContent="جارِ إعداد تقرير الخطة…";
-  try{const data=await chairAPI.getClinicalPlanDetail(plan.planId);clinicalPlanData=data;$("clinicalPlanTitle").textContent=data.title||plan.title||"تقرير الخطة";$("clinicalPlanSummary").textContent=`${plan.progress||data.report?.progress||0}% · ${plan.sessions} جلسة · ${plan.events} حدث سريري`;renderClinicalPlanReport(data);renderClinicalTimeline(data.events||[]);showClinicalReport()}catch(error){note({message:error.message||"تعذر قراءة تفاصيل الخطة",type:"error"})}
+  try{const data=await chairAPI.getClinicalPlanDetail(request);if(scope!==archiveScope()||version!==archiveReadVersion)return;clinicalPlanData=data;$("clinicalPlanTitle").textContent=data.title||plan.title||"تقرير الخطة";$("clinicalPlanSummary").textContent=`${plan.progress||data.report?.progress||0}% · ${plan.sessions||0} جلسة · ${plan.events||0} حدث سريري`;renderClinicalPlanReport(data);renderClinicalTimeline(data.events||[]);showClinicalReport()}catch(error){note({message:error.message||"تعذر قراءة تفاصيل الخطة",type:"error"})}
 }
 function treatmentDuration(value){const total=Math.max(0,Math.round(Number(value||0)/1000)),hours=Math.floor(total/3600),minutes=Math.floor(total%3600/60),seconds=total%60;return hours?`${hours} س ${String(minutes).padStart(2,"0")} د`:`${String(minutes).padStart(2,"0")}:${String(seconds).padStart(2,"0")}`}
 function renderClinicalPlanReport(data){const report=data.report||{},simple=report.showTreatmentMetrics===false;$("reportReachedStage").textContent=report.reachedStage||"لم تبدأ بعد";$("reportDuration").textContent=treatmentDuration(report.totalTreatmentMs);$("reportAnesthesia").textContent=`${Number(report.anestheticQuantity||0)} ${report.anestheticUnit||"أمبولة"}`;$("reportRestoration").textContent=report.finalRestoration||"غير مسجل";document.querySelector(".plan-report-grid")?.classList.toggle("simple",simple);document.querySelectorAll(".report-treatment-metric").forEach(item=>item.hidden=simple);$("reportNotes").innerHTML=(report.notes||[]).length?(report.notes||[]).map(item=>`<p><time>${clinicalDate(item.at)} · ${clinicalTime(item.at)}</time>${escapeHtml(item.text)}</p>`).join(""):"لا توجد ملاحظات مسجلة."}
@@ -356,3 +366,9 @@ $("showQr").onclick=async()=>{
     note({message:"تم عرض QR الموعد",type:"success"});
   }catch(error){note({message:error.message||"تعذر إنشاء QR",type:"error"})}
 };
+
+chairAPI.onOpenPlanDetails?.(async request=>{
+  if(archiveScope(request)!==archiveScope())return;
+  const scope=archiveScope();await openPatientArchive();
+  if(scope===archiveScope())await openClinicalPlan(request);
+});

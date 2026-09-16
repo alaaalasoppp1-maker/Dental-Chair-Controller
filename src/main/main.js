@@ -14,10 +14,14 @@ const {PatientArchive}=require("./patient-archive");
 const {AdbReverseLink}=require("./adb-link");
 const {CommandSessionGuard}=require("./command-session-guard");
 const {ClinicalEventJournal,requestIdentity}=require("./clinical-event-journal");
+const {ClinicPane}=require('./clinic-pane');
+const {CloudQueue}=require('./cloud-queue');
+const {planRequest}=require('./clinic-pane-policy');
 const {contextFromCommand,normalizeAssistantSession,normalizeAssistantStage,CONTRACT_NAME,TRANSPORT_PROTOCOL}=require("../shared/clinical-contract");
 
 let win,tray,settings,images,server,discovery,archive,adbLink,quitting=false,currentMediaPath="";
 let pendingProtocolUrl=null;
+let clinicPane,cloudQueue,pendingPlanDetails=null;
 const state={settings:{},images:{},network:{},patient:{selected:false},clinical:{contract:CONTRACT_NAME,protocol:TRANSPORT_PROTOCOL,context:null,lastEventAt:0},display:{mode:"home",imageVisible:false}};
 let clinicalJournal;
 const commandSessionGuard=new CommandSessionGuard();
@@ -110,6 +114,7 @@ function saveAssistantMedia(payload={}){
   // bytes immediately; waiting for a second optimization pass caused black
   // display frames and client-side timeouts on slower clinic laptops.
   const displayClients=payload.display&&saved.file?showFile(saved.file,"image",false):0;
+  if(!displayOnly)queueCloudFile(saved.file,archive.requirePatient(),/xray|radiograph|panorama/i.test(saved.kind||'')?'xrays':'photos',saved.planId);
   return{planId:saved.planId,sessionId:saved.sessionId,fileName:saved.fileName,bytes:saved.bytes,displayRequested:Boolean(payload.display),displayed:Number(displayClients||0)>0,displayClients:Number(displayClients||0)};
 }
 function treatmentList(){return Array.isArray(settings?.get("treatments"))?settings.get("treatments"):[];}
@@ -307,6 +312,12 @@ async function handleCommand(payload){
     emit();return true;
   }
   if(payload?.action==="show_patient")return sendPatientToDisplay(payload);
+  if(payload?.action==='open_plan_details'){
+    const request=planRequest(payload,archive.snapshot(),archive.listClinicalPlans().plans);
+    pendingPlanDetails=request;clinicPane?.show(false);win.show();win.focus();emit();
+    if(!win.webContents.isLoadingMainFrame()){win.webContents.send('ui:open-plan-details',request);pendingPlanDetails=null;}
+    return true;
+  }
   if(payload?.action==="show_appointment_qr")return await showAppointmentQr(payload);
   return false;
 }
@@ -343,6 +354,7 @@ function safeRegister(accelerator,handler,label,used){
 }
 function enableViewerKeys(){
   disableViewerKeys();
+  if(clinicPane?.open)return;
   const s=shortcuts();
   const used=new Set(Object.entries(s)
     .filter(([name,value])=>!VIEWER_SHORTCUT_KEYS.includes(name)&&String(value||"").trim())
@@ -367,6 +379,7 @@ function disableViewerKeys(){
 }
 function registerGlobalKeys(){
   globalShortcut.unregisterAll();
+  if(clinicPane?.open)return;
   const s=shortcuts(),used=new Set();
   const base=[
     ["latest",()=>showImageItem(images.latest()),"أحدث صورة"],
@@ -404,8 +417,21 @@ function createWindow(){
     webPreferences:{preload:path.join(__dirname,"preload.js"),contextIsolation:true,nodeIntegration:false}
   });
   win.loadFile(path.join(__dirname,"..","renderer","index.html"));
+  clinicPane=new ClinicPane({window:win,url:settings.get('clinicWebUrl'),onToggle:()=>registerGlobalKeys(),onSession:value=>cloudQueue?.setSession(value),onCommand:handleCommand,onEvents:query=>{
+    const current=archive.requirePatient();if(query.clinicId!==current.clinicId||query.patientId!==current.patientId)throw new Error('clinical_scope_mismatch');
+    const batch=getClinicalEvents(query),events=batch.events||[],context=server.assistantContext;
+    return {ok:true,events,journal:batch.journal,context:context?.patient?.clinicId===current.clinicId&&context?.patient?.patientId===current.patientId?context:null};
+  }});
   win.on("close",e=>{if(!quitting){e.preventDefault();win.hide();}});
-  win.webContents.on("did-finish-load",emit);
+  win.webContents.on("did-finish-load",()=>{emit();clinicPane.emit('');if(pendingPlanDetails){try{planRequest(pendingPlanDetails,archive.snapshot(),archive.listClinicalPlans().plans);win.webContents.send('ui:open-plan-details',pendingPlanDetails);}catch{}pendingPlanDetails=null;}});
+}
+
+function queueCloudFile(file,patient,category='attachments',planId=''){
+  try{const known=(state.clinical.context?.plans||[]).some(p=>String(p.planId)===String(planId));cloudQueue?.enqueue(file,{...patient},category,known?planId:'');}
+  catch{notice('بقي الملف محفوظاً محلياً؛ تعذر إضافته لطابور الرفع. أعد المحاولة من أرشيف المريض.','warning');}
+}
+function requireArchiveSession(expected){
+  const current=archive.requirePatient();if(current.clinicId!==expected.clinicId||current.patientId!==expected.patientId||current.sessionId!==expected.sessionId)throw new Error('تغيّر المريض المفتوح؛ أعد اختيار الملف.');return current;
 }
 
 function createTray(){
@@ -462,17 +488,18 @@ function ipc(){
   ipcMain.handle("archive:open-patient-folder",()=>shell.openPath(archive.requirePatient().patientDir));
   ipcMain.handle("archive:list",(_event,category)=>archive.listArchive(category));
   ipcMain.handle("archive:list-clinical-plans",()=>archive.listClinicalPlans());
-  ipcMain.handle("archive:clinical-plan-detail",(_event,planId)=>archive.clinicalPlanDetail(planId));
+  ipcMain.handle("archive:clinical-plan-detail",(event,request)=>{if(event.sender!==win.webContents)throw new Error('sender_denied');const wanted=typeof request==='string'?{...archive.snapshot(),planId:request}:request;planRequest(wanted,archive.snapshot(),archive.listClinicalPlans().plans);return archive.clinicalPlanDetail(wanted.planId);});
+  ipcMain.handle('cloud:queue-patient',event=>{if(event.sender!==win.webContents)throw new Error('sender_denied');if(!cloudQueue)throw new Error('تعذر فتح طابور الرفع.');const patient=archive.requirePatient();return cloudQueue.enqueueArchive(patient,(state.clinical.context?.plans||[]).map(p=>String(p.planId)));});
   ipcMain.handle("archive:preview",(_event,file)=>archive.archivePreview(file));
   ipcMain.handle("archive:show",(_event,file)=>{const preview=archive.archivePreview(file);if(preview.kind!=="image")throw new Error("يمكن عرض الصور فقط على شاشة الكرسي");showFile(preview.path,"image",false);return true;});
   ipcMain.handle("archive:reveal",(_event,file)=>{const preview=archive.archivePreview(file);shell.showItemInFolder(preview.path);return true;});
   ipcMain.handle("archive:delete",(_event,file)=>archive.deleteArchive(file));
-  ipcMain.handle("archive:import",async(_event,category)=>{archive.requirePatient();const result=await dialog.showOpenDialog(win,{title:"إضافة ملف إلى أرشيف المريض",properties:["openFile"],filters:[{name:"Clinical files",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff","pdf","json"]}]});return result.canceled?null:archive.importArchive(result.filePaths[0],category);});
+  ipcMain.handle("archive:import",async(_event,category)=>{const patient={...archive.requirePatient()};const result=await dialog.showOpenDialog(win,{title:"إضافة ملف إلى أرشيف المريض",properties:["openFile"],filters:[{name:"Clinical files",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff","pdf","json"]}]});if(result.canceled)return null;requireArchiveSession(patient);const saved=archive.importArchive(result.filePaths[0],category);queueCloudFile(saved.path,patient,/xray|panorama|sensor/i.test(category)?'xrays':'attachments');return saved;});
   ipcMain.handle("panorama:list",()=>archive.listPanoramas());
   ipcMain.handle("panorama:import",async()=>{
-    archive.requirePatient();
+    const patient={...archive.requirePatient()};
     const result=await dialog.showOpenDialog(win,{title:"إضافة صورة بانوراما إلى ملف المريض",properties:["openFile"],filters:[{name:"Dental Images",extensions:["png","jpg","jpeg","bmp","webp","tif","tiff"]}]});
-    return result.canceled?null:archive.importPanorama(result.filePaths[0]);
+    if(result.canceled)return null;requireArchiveSession(patient);const saved=archive.importPanorama(result.filePaths[0]);queueCloudFile(saved.path,patient,'xrays');return saved;
   });
   ipcMain.handle("panorama:show",(_event,file)=>{
     const allowed=archive.listPanoramas().find(item=>item.path===file);
@@ -691,6 +718,7 @@ pendingProtocolUrl=findProtocolUrl(process.argv);
 
 app.whenReady().then(async()=>{
   settings=new SettingsStore(app);state.settings=settings.all();
+  try{cloudQueue=new CloudQueue({directory:app.getPath('userData'),origin:settings.get('clinicWebUrl'),onNotice:notice});}catch{dialog.showErrorBox('رفع الأرشيف معلّق','تعذر قراءة طابور الرفع السابق. بقيت الملفات الأصلية محفوظة. احتفظ بملف cloud-upload-queue.json للمراجعة.');}
   try{clinicalJournal=new ClinicalEventJournal(path.join(app.getPath('userData'),'ClinicalEventJournal'))}catch{dialog.showErrorBox('تعذر فتح سجل المساعد','تعذر تجهيز الحفظ الدائم. تحقق من مساحة القرص وصلاحية مجلد التطبيق ثم أعد تشغيل الكونترولر.');app.quit();return;}
   archive=new PatientArchive({app,settings,onState:selected=>{state.patient=selected;emit();},onNotice:notice});
   state.patient=archive.snapshot();
@@ -732,5 +760,5 @@ app.whenReady().then(async()=>{
   app.setLoginItemSettings({openAtLogin:Boolean(settings.get("launchAtLogin"))});
   emit();
 });
-app.on("before-quit",()=>{quitting=true;discovery?.stop();adbLink?.stop();globalShortcut.unregisterAll();});
+app.on("before-quit",()=>{quitting=true;cloudQueue?.close();discovery?.stop();adbLink?.stop();globalShortcut.unregisterAll();});
 app.on("window-all-closed",()=>{});
