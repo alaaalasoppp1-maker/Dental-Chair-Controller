@@ -1,4 +1,4 @@
-.clinic-pane-fab{position:fixed;right:0;top:45%;z-index:80;border-radius:14px 0 0 14px;background:#0a91ac;color:white;padding:14px 12px;box-shadow:0 8px 26px #0005;font-weight:700}
+.clinic-pane-fab{position:fixed;right:0;top:45%;z-index:80;border-radius:14px 0 0 14px;background:#0a91ac;color:white;padding:14px 12px;box-shadow:0 8px 26px #0005;font-weight:700;touch-action:pan-y}
 #clinicPaneToolbar{position:fixed;inset:0 0 auto;height:58px;box-sizing:border-box;z-index:10000;background:#0b2035;color:white;display:flex;align-items:center;gap:6px;padding:7px 10px;direction:rtl;border-bottom:1px solid #1c5265}
 #clinicPaneToolbar[hidden],.clinic-pane-fab[hidden]{display:none}
 #clinicPaneToolbar button{font:600 12px system-ui;padding:8px 9px;white-space:nowrap;background:#18374b;color:#fff;border:1px solid #356071;border-radius:8px}

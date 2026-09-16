@@ -1,6 +1,7 @@
 'use strict';
 const {contextBridge,ipcRenderer}=require('electron');
 contextBridge.exposeInMainWorld('DCOSController',Object.freeze({
+  health:()=>ipcRenderer.invoke('clinic:health'),
   openExternal:url=>ipcRenderer.invoke('clinic:external',url),
   session:payload=>ipcRenderer.invoke('clinic:session',payload),
   chairCommand:payload=>ipcRenderer.invoke('clinic:command',payload),
@@ -10,7 +11,29 @@ contextBridge.exposeInMainWorld('DCOSController',Object.freeze({
   prompt:(message,value)=>ipcRenderer.sendSync('clinic:prompt',message,value),
   close:()=>ipcRenderer.invoke('clinic-pane:toggle',false)
 }));
-let start=null;
-window.addEventListener('pointerdown',event=>{start={x:event.clientX,y:event.clientY};},true);
-window.addEventListener('pointerup',event=>{if(start&&start.x<35&&event.clientX-start.x>110&&Math.abs(event.clientY-start.y)<70)void ipcRenderer.invoke('clinic-pane:toggle',false);start=null;},true);
+// Older hosted pages still fetch loopback URLs. Route only our three endpoints
+// through the same sender-validated IPC bridge, before page scripts start.
+contextBridge.executeInMainWorld({func:()=>{
+  const originalFetch=window.fetch.bind(window),bridge=window.DCOSController;
+  window.fetch=async(input,init)=>{
+    let url;try{url=new URL(typeof input==='string'||input instanceof URL?String(input):input.url,location.href);}catch{return originalFetch(input,init);}
+    if(url.origin!=='http://127.0.0.1:8765'||!['/health','/command','/clinical/events'].includes(url.pathname))return originalFetch(input,init);
+    const request=new Request(input,init);
+    const abort=()=>new DOMException('The operation was aborted.','AbortError');
+    if(request.signal.aborted)throw abort();
+    let operation;
+    if(url.pathname==='/health'&&request.method==='GET')operation=()=>bridge.health();
+    else if(url.pathname==='/command'&&request.method==='POST')operation=async()=>bridge.chairCommand(JSON.parse(await request.text()));
+    else if(url.pathname==='/clinical/events'&&request.method==='GET')operation=()=>bridge.clinicalEvents(Object.fromEntries(url.searchParams));
+    else return new Response(JSON.stringify({ok:false,error:'method_not_allowed'}),{status:405,headers:{'Content-Type':'application/json'}});
+    return new Promise((resolve,reject)=>{
+      const onAbort=()=>reject(abort());request.signal.addEventListener('abort',onAbort,{once:true});
+      Promise.resolve().then(()=>{if(request.signal.aborted)throw abort();return operation();}).then(result=>{
+        if(request.signal.aborted)throw abort();
+        resolve(new Response(JSON.stringify(result),{status:result?.ok===false?400:200,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}}));
+      }).catch(reject).finally(()=>request.signal.removeEventListener('abort',onAbort));
+    });
+  };
+  window.alert=m=>bridge.alert(String(m));window.confirm=m=>bridge.confirm(String(m));window.prompt=(m,d='')=>bridge.prompt(String(m),String(d));
+}});
 window.addEventListener('pagehide',()=>{void ipcRenderer.invoke('clinic:session',null);});

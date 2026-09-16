@@ -1,11 +1,14 @@
 'use strict';
 const path=require('node:path');
+const fs=require('node:fs');
 const {WebContentsView,BrowserWindow,ipcMain,dialog,shell}=require('electron');
 const {clinicURL,ownPage,externalURL}=require('./clinic-pane-policy');
+const {version:controllerVersion}=require('../../package.json');
+const edgeSwipeSource=fs.readFileSync(path.join(__dirname,'../shared/edge-swipe.js'),'utf8');
 class ClinicPane {
   constructor({window,url,onToggle=()=>{},onSession=()=>{},onCommand=()=>{},onEvents=()=>{}}){
     this.window=window;this.url=clinicURL(url);this.origin=new URL(this.url).origin;this.onToggle=onToggle;this.onSession=onSession;this.open=false;this.pendingPrompt=null;
-    this.onCommand=onCommand;this.onEvents=onEvents;
+    this.onCommand=onCommand;this.onEvents=onEvents;this.bridgeReady=false;
     this.view=new WebContentsView({webPreferences:{preload:path.join(__dirname,'clinic-preload.js'),partition:'persist:dtdc-clinic',contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
     this.view.setBackgroundColor('#f4f8fc');
     const wc=this.view.webContents;
@@ -13,10 +16,11 @@ class ClinicPane {
     wc.setWindowOpenHandler(({url})=>{this.external(url).catch(()=>{});return {action:'deny'};});
     wc.on('will-navigate',(event,url)=>{if(!ownPage(url,this.origin)){event.preventDefault();this.external(url).catch(()=>{});}});
     wc.on('will-redirect',(event,url)=>{if(!ownPage(url,this.origin)){event.preventDefault();this.external(url).catch(()=>{});}});
-    wc.on('did-start-navigation',(_event,_url,_isInPlace,isMainFrame)=>{if(isMainFrame)this.onSession(null);});
+    wc.on('did-start-navigation',(_event,_url,isInPlace,isMainFrame)=>{if(isMainFrame){this.onSession(null);if(!isInPlace)this.bridgeReady=false;}});
     wc.on('did-fail-load',(_event,code)=>{if(code!==-3)this.emit('تعذر تحميل موقع العيادة. تحقق من الإنترنت ثم أعد التحميل.');});
+    wc.on('preload-error',()=>this.emit('تعذر تجهيز الربط الداخلي. أغلق الكونترولر بالكامل ثم شغّل النسخة المحدّثة.'));
     wc.on('did-finish-load',()=>{if(ownPage(wc.getURL(),this.origin)){
-      wc.executeJavaScript("window.alert=(m)=>window.DCOSController.alert(String(m));window.confirm=(m)=>window.DCOSController.confirm(String(m));window.prompt=(m,d='')=>window.DCOSController.prompt(String(m),String(d));").catch(()=>{});this.emit('');
+      wc.executeJavaScript(edgeSwipeSource+"\nwindow.__dtdcRemoveSwipe?.();window.__dtdcRemoveSwipe=window.DTDCEdgeSwipe.install({window,edge:'left',onSwipe:()=>window.DCOSController.close()});window.DCOSController.health();").then(result=>{this.bridgeReady=!!result?.ok;this.emit(this.bridgeReady?'':'تعذر تجهيز الربط الداخلي. أعد تشغيل الكونترولر.');}).catch(()=>this.emit('تعذر تجهيز الربط الداخلي. أعد تشغيل الكونترولر بعد تثبيت التحديث.'));
     }});
     wc.on('before-input-event',(event,input)=>{
       if(input.type!=='keyDown')return;
@@ -28,7 +32,7 @@ class ClinicPane {
     this.installIPC();
   }
   valid(event){return event.sender===this.view.webContents&&event.senderFrame===this.view.webContents.mainFrame&&ownPage(event.senderFrame?.url||'',this.origin);}
-  emit(message){if(!this.window.isDestroyed())this.window.webContents.send('clinic-pane:state',{open:this.open,url:this.url,message});}
+  emit(message){if(!this.window.isDestroyed())this.window.webContents.send('clinic-pane:state',{open:this.open,url:this.url,message:message||(this.bridgeReady?`متصل داخلياً · ${controllerVersion}`:'')});}
   bounds(){if(!this.open)return;const [width,height]=this.window.getContentSize();this.view.setBounds({x:0,y:58,width,height:Math.max(0,height-58)});}
   show(open=true){
     if(open===this.open)return;this.open=open;
@@ -40,8 +44,12 @@ class ClinicPane {
   async print(){if(ownPage(this.view.webContents.getURL(),this.origin))this.view.webContents.print({printBackground:true},()=>{});}
   async savePage(){const choice=await dialog.showSaveDialog(this.window,{title:'حفظ الصفحة',defaultPath:'clinic-page.html',filters:[{name:'HTML',extensions:['html']}]});if(!choice.canceled&&choice.filePath)await this.view.webContents.savePage(choice.filePath,'HTMLComplete');}
   installIPC(){
-    ipcMain.handle('clinic:command',async(event,payload)=>{if(!this.valid(event)||!['select_patient','show_patient','clear_patient','open_plan_details','show_appointment_qr'].includes(payload?.action)||JSON.stringify(payload).length>1000000)throw new Error('command_denied');return {ok:!!await this.onCommand(payload)};});
-    ipcMain.handle('clinic:events',(event,query)=>{if(!this.valid(event)||!query||JSON.stringify(query).length>3000)throw new Error('events_denied');return this.onEvents(query);});
+    ipcMain.handle('clinic:health',event=>{if(!this.valid(event))throw new Error('sender_denied');return {ok:true,product:'DentalChairController',protocol:5,controllerVersion,transport:'embedded'};});
+    ipcMain.handle('clinic:command',async(event,payload)=>{
+      if(!this.valid(event)||!['select_patient','show_patient','clear_patient','open_plan_details','show_appointment_qr'].includes(payload?.action)||JSON.stringify(payload).length>1000000)throw new Error('command_denied');
+      try{return await this.onCommand(payload)?{ok:true}:{ok:false,error:'unsupported_command'};}catch(error){return {ok:false,error:String(error?.message||'command_failed')};}
+    });
+    ipcMain.handle('clinic:events',(event,query)=>{if(!this.valid(event)||!query||JSON.stringify(query).length>3000)throw new Error('events_denied');try{return this.onEvents(query);}catch(error){return {ok:false,error:String(error?.message||'events_failed')};}});
     ipcMain.handle('clinic-pane:toggle',(event,open)=>{if(event.sender!==this.window.webContents&&!this.valid(event))throw new Error('sender_denied');this.show(typeof open==='boolean'?open:!this.open);});
     ipcMain.handle('clinic-pane:action',(event,action)=>{
       if(event.sender!==this.window.webContents)throw new Error('sender_denied');const wc=this.view.webContents;
