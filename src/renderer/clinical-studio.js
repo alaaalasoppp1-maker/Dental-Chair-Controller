@@ -25,7 +25,7 @@ function uid(prefix){return `${prefix}-${Date.now()}-${Math.random().toString(36
 function escapeHtml(value){return String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));}
 function notify(error){alert(error?.message||String(error||"حدث خطأ"));}
 function patientReady(){return Boolean(appState.patient?.selected);}
-function patientKey(state=appState){const p=state?.patient||{};return p.selected?String(p.patientId||p.fileNo||p.fullName||""):"";}
+function patientKey(state=appState){const p=state?.patient||{};return p.selected?JSON.stringify([p.clinicId||"",p.patientId||p.fileNo||p.fullName||"",p.sessionId||""]):"";}
 function requirePatient(){if(patientReady())return true;notify("افتح ملف المريض من Dental Chain OS أولاً");return false;}
 function currentLabel(){return labels.find(item=>item.id===activeLabelId)||labels[0];}
 function currentStage(){return stages[activeStage]||null;}

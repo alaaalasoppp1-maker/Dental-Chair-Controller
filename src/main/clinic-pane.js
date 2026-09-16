@@ -6,9 +6,9 @@ const {clinicURL,ownPage,externalURL}=require('./clinic-pane-policy');
 const {version:controllerVersion}=require('../../package.json');
 const edgeSwipeSource=fs.readFileSync(path.join(__dirname,'../shared/edge-swipe.js'),'utf8');
 class ClinicPane {
-  constructor({window,url,onToggle=()=>{},onSession=()=>{},onCommand=()=>{},onEvents=()=>{}}){
+  constructor({window,url,onToggle=()=>{},onSession=()=>{},onCloudQueueAll=async()=>({queued:0}),onCommand=()=>{},onEvents=()=>{}}){
     this.window=window;this.url=clinicURL(url);this.origin=new URL(this.url).origin;this.onToggle=onToggle;this.onSession=onSession;this.open=false;this.pendingPrompt=null;
-    this.onCommand=onCommand;this.onEvents=onEvents;this.bridgeReady=false;
+    this.onCommand=onCommand;this.onEvents=onEvents;this.onCloudQueueAll=onCloudQueueAll;this.bridgeReady=false;
     this.view=new WebContentsView({webPreferences:{preload:path.join(__dirname,'clinic-preload.js'),partition:'persist:dtdc-clinic',contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
     this.view.setBackgroundColor('#f4f8fc');
     const wc=this.view.webContents;
@@ -57,6 +57,7 @@ class ClinicPane {
     });
     ipcMain.handle('clinic:external',(event,url)=>{if(!this.valid(event))throw new Error('sender_denied');return this.external(url);});
     ipcMain.handle('clinic:session',(event,payload)=>{if(!this.valid(event))throw new Error('sender_denied');this.onSession(payload);return true;});
+    ipcMain.handle('clinic:cloud-queue-all',event=>{if(!this.valid(event))throw new Error('sender_denied');return this.onCloudQueueAll();});
     ipcMain.on('clinic:alert',(event,message)=>{if(!this.valid(event)){event.returnValue=null;return;}dialog.showMessageBoxSync(this.window,{type:'info',title:'العيادة',message:String(message).slice(0,10000),buttons:['حسناً']});event.returnValue=null;});
     ipcMain.on('clinic:confirm',(event,message)=>{if(!this.valid(event)){event.returnValue=false;return;}event.returnValue=dialog.showMessageBoxSync(this.window,{type:'question',title:'تأكيد',message:String(message).slice(0,10000),buttons:['نعم','لا'],defaultId:1,cancelId:1})===0;});
     ipcMain.on('clinic:prompt',(event,message,value)=>{

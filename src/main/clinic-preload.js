@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('DCOSController',Object.freeze({
   health:()=>ipcRenderer.invoke('clinic:health'),
   openExternal:url=>ipcRenderer.invoke('clinic:external',url),
   session:payload=>ipcRenderer.invoke('clinic:session',payload),
+  queueAllCloudArchive:()=>ipcRenderer.invoke('clinic:cloud-queue-all'),
   chairCommand:payload=>ipcRenderer.invoke('clinic:command',payload),
   clinicalEvents:query=>ipcRenderer.invoke('clinic:events',query),
   alert:message=>ipcRenderer.sendSync('clinic:alert',message),

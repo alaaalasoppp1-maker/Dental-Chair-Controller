@@ -11,6 +11,18 @@ test('identical file numbers and patient names in two clinics never select the s
   assert.throws(()=>f.archive.select({...base,clinicId:'B',patientDir:a.patientDir}),/هوية/);
  }finally{f.close()}
 });
+test('one strongly matching legacy folder is adopted in place without losing its files',()=>{
+ const f=fixture();try{
+  const legacy=path.join(f.root,'0001 - Same name');fs.mkdirSync(legacy);fs.mkdirSync(path.join(legacy,'06 - صور فوتوغرافية'));fs.writeFileSync(path.join(legacy,'06 - صور فوتوغرافية','old.jpg'),'old');
+  fs.writeFileSync(path.join(legacy,'patient.json'),JSON.stringify({patientId:'old-local-id',fileNo:'0001',fullName:'Same name',legacyField:'keep'}));
+  assert.throws(()=>f.archive.select({clinicId:'A',patientId:'uuid-new',fileNo:'0001',fullName:'Same name'}),/legacy_archive_bind_required/);
+  const selected=f.archive.select({clinicId:'A',patientId:'uuid-new',fileNo:'0001',fullName:'Same name',allowLegacyBind:true});
+  assert.equal(selected.patientDir,legacy);assert.equal(fs.readFileSync(path.join(selected.folders.Photos,'old.jpg'),'utf8'),'old');
+  const manifest=JSON.parse(fs.readFileSync(path.join(legacy,'patient.json'),'utf8'));assert.equal(manifest.clinicId,'A');assert.equal(manifest.patientId,'uuid-new');assert.equal(manifest.legacyField,'keep');assert.ok(manifest.identityMigratedAt);
+  const backup=JSON.parse(fs.readFileSync(path.join(legacy,'.dtdc-legacy-patient.json'),'utf8'));assert.equal(backup.patientId,'old-local-id');
+  const again=f.archive.select({clinicId:'A',patientId:'uuid-new',fileNo:'0001',fullName:'Renamed later'});assert.equal(again.patientDir,legacy);
+ }finally{f.close()}
+});
 test('legacy number-only folders stay untouched; missing or duplicate identities require review',()=>{
  const f=fixture();try{
   const legacy=path.join(f.root,'0001 - old');fs.mkdirSync(legacy);const original=JSON.stringify({patientId:'old',fileNo:'0001',fullName:'Old'});fs.writeFileSync(path.join(legacy,'patient.json'),original);

@@ -40,7 +40,7 @@ function readPatientManifest(dir){
   }
   const identities=new Set(records.filter(row=>row.clinicId&&(row.patientId||row.id)).map(row=>JSON.stringify([String(row.clinicId),String(row.patientId||row.id)])));
   if(identities.size>1)throw new Error("بيانات هوية المجلد متعارضة. راجع الأرشيف قبل المتابعة.");
-  return records[0]||null;
+  return records.find(row=>row.clinicId&&(row.patientId||row.id))||records[0]||null;
 }
 function patientDirectories(root){
   return fs.readdirSync(root,{withFileTypes:true}).filter(entry=>entry.isDirectory()).map(entry=>path.join(root,entry.name));
@@ -50,12 +50,35 @@ function explicitPatientDirectory(root,payload){
   for(const value of values){const candidate=path.isAbsolute(String(value))?String(value):path.join(root,String(value));if(insideRoot(root,candidate)&&fs.existsSync(candidate)&&fs.statSync(candidate).isDirectory())return candidate;}
   return"";
 }
+function legacyMatch(patientDir,manifest,payload,identity){
+  const requestedFileNo=String(payload.fileNo||payload.fileNumber||"").trim(),requestedName=String(payload.fullName||payload.name||"").trim();
+  const oldPatientId=String(manifest?.patientId||manifest?.id||"").trim(),oldFileNo=String(manifest?.fileNo||manifest?.fileNumber||"").trim(),oldName=String(manifest?.fullName||manifest?.name||"").trim();
+  const dirName=path.basename(patientDir),idExact=Boolean(oldPatientId)&&oldPatientId===identity.patientId;
+  const idCompatible=idExact&&(!requestedFileNo||!oldFileNo||sameValue(oldFileNo,requestedFileNo))&&(!requestedName||!oldName||sameValue(oldName,requestedName));
+  const fileAndName=Boolean(requestedFileNo&&requestedName)&&sameValue(oldFileNo,requestedFileNo)&&sameValue(oldName,requestedName);
+  const folderAndName=Boolean(requestedFileNo&&requestedName)&&(sameValue(dirName,`${requestedFileNo} - ${requestedName}`)||sameValue(dirName,`${requestedName} - ${requestedFileNo}`));
+  const weak=idExact||sameValue(oldFileNo,requestedFileNo)||sameValue(oldPatientId,identity.patientId)||folderAndName;
+  return{strong:idCompatible||fileAndName||folderAndName,weak};
+}
+function legacyPatientDirectory(root,payload,identity){
+  const strong=[],weak=[];
+  for(const patientDir of patientDirectories(root)){
+    const manifest=readPatientManifest(patientDir);
+    if(manifest?.clinicId&&(manifest.patientId||manifest.id))continue;
+    const match=legacyMatch(patientDir,manifest,payload,identity);
+    if(match.strong)strong.push({patientDir,manifest,legacy:true});else if(match.weak)weak.push({patientDir,manifest});
+  }
+  if(strong.length>1)throw new Error("يوجد أكثر من أرشيف قديم يطابق المريض. يحتاج مراجعة ربط المجلد قبل المتابعة.");
+  if(strong.length===1)return strong[0];
+  if(weak.length)throw new Error("يوجد أرشيف قديم مشابه دون هوية عيادة مؤكدة. يحتاج مراجعة ربط المجلد؛ هذا لا يعني أن صور المريض غير موجودة.");
+  return null;
+}
 function resolvePatientDirectory(root,payload,identity){
   const explicit=explicitPatientDirectory(root,payload);
   if(explicit){const manifest=readPatientManifest(explicit);if(!ArchiveIdentity.matches(manifest,identity))throw new Error("المجلد المحدد لا يطابق هوية العيادة والمريض");return{patientDir:explicit,manifest};}
   const matching=patientDirectories(root).map(patientDir=>({patientDir,manifest:readPatientManifest(patientDir)})).filter(row=>ArchiveIdentity.matches(row.manifest,identity));
   if(matching.length>1)throw new Error("يوجد مجلدان لهوية المريض نفسها. راجع الأرشيف قبل المتابعة");
-  return matching[0]||null;
+  return matching[0]||legacyPatientDirectory(root,payload,identity);
 }
 function patientFolder(dir,logicalName){
   const aliases=FOLDER_ALIASES[logicalName]||[logicalName];
@@ -122,12 +145,13 @@ class PatientArchive{
     const identity=ArchiveIdentity.identity(payload),resolved=resolvePatientDirectory(root,payload,identity),manifest=resolved?.manifest||{};
     const fullName=safePart(payload.fullName||payload.name||manifest.fullName||manifest.name,"مريض"),fileNo=safePart(payload.fileNo||payload.fileNumber||manifest.fileNo||manifest.fileNumber,""),patientId=identity.patientId,clinicId=identity.clinicId;
     const patientDir=resolved?.patientDir||path.join(root,ArchiveIdentity.folderKeySync(identity));
+    if(resolved?.legacy&&!payload.allowLegacyBind)throw new Error("legacy_archive_bind_required");
     if(fs.existsSync(patientDir)&&!resolved&&fs.readdirSync(patientDir).length)throw new Error("المجلد المحجوز موجود دون بيان هوية مطابق. راجع الأرشيف");
-    if(!resolved&&patientDirectories(root).some(dir=>{const old=readPatientManifest(dir);return !(old?.clinicId&&(old.patientId||old.id))&&(sameValue(old?.fileNo,fileNo)||sameValue(old?.patientId,patientId)||sameValue(path.basename(dir),`${fileNo} - ${fullName}`));}))throw new Error("يوجد أرشيف قديم مشابه دون هوية عيادة مؤكدة. يحتاج مراجعة ربط المجلد؛ هذا لا يعني أن صور المريض غير موجودة.");
     fs.mkdirSync(patientDir,{recursive:true});
     const folders={};for(const name of FOLDERS)folders[name]=patientFolder(patientDir,name);
     const previousSame=this.current&&ArchiveIdentity.matches(this.current,identity);
     const selectedAt=new Date().toISOString();
+    if(resolved?.legacy&&Object.keys(manifest).length){const backup=path.join(patientDir,".dtdc-legacy-patient.json");if(!fs.existsSync(backup))writeJson(backup,{...manifest,backedUpAt:selectedAt});}
     this.current={
       clinicId,
       patientId,
@@ -144,6 +168,7 @@ class PatientArchive{
       selectedAt
     };
     writeJson(path.join(patientDir,"patient.json"),{
+      ...manifest,
       schema:"dtdc-patient-archive-v4",
       clinicId,
       patientId,
@@ -154,6 +179,7 @@ class PatientArchive{
       doctorName:this.current.doctorName,
       clinicName:this.current.clinicName,
       sessionId:this.current.sessionId,
+      ...(resolved?.legacy?{identityMigratedAt:selectedAt}:{}),
       lastSelectedAt:selectedAt
     });
     this.onState(this.snapshot());return this.snapshot();

@@ -281,17 +281,22 @@ async function showAppointmentQr(data){
   setDisplay({mode:"appointment_qr",imageVisible:false});disableViewerKeys();notice("تم عرض QR لحدث يبدأ قبل الموعد بيوم وينتهي عند الموعد","success");return true;
 }
 function sendPatientToDisplay(payload={}){
-  const context=selectClinicalPatient(payload);
-  const fullName=String(state.patient?.fullName||payload.fullName||payload.displayName||"ضيفنا الكريم").trim();
-  const displayName=String(state.patient?.firstName||payload.firstName||payload.displayName||fullName.split(/\s+/)[0]||"ضيفنا الكريم").trim();
-  const rawGender=String(state.patient?.gender||payload.gender||"").toLowerCase();
+  const requestedClinic=String(payload.clinicId||payload.patient?.clinicId||"").trim(),requestedPatient=String(payload.patientId||payload.patient?.patientId||payload.patient?.id||"").trim();
+  const hasClinicalIdentity=Boolean(requestedClinic&&requestedPatient)&&!payload.manual;
+  if(hasClinicalIdentity)selectClinicalPatient(payload);
+  const active=state.patient?.selected?state.patient:null;
+  const manualName=String(payload.fullName||payload.displayName||"").trim();
+  const fullName=String(hasClinicalIdentity?(active?.fullName||payload.fullName||payload.displayName||"ضيفنا الكريم"):(manualName||active?.fullName||"ضيفنا الكريم")).trim();
+  const displayName=String(hasClinicalIdentity?(active?.firstName||payload.firstName||payload.displayName||fullName.split(/\s+/)[0]||"ضيفنا الكريم"):(payload.firstName||manualName||active?.firstName||fullName.split(/\s+/)[0]||"ضيفنا الكريم")).trim();
+  const rawGender=String((hasClinicalIdentity?active?.gender:payload.gender)||payload.gender||active?.gender||"").toLowerCase();
   const gender=rawGender==="female"||rawGender==="male"?rawGender:"";
   const honorific=gender==="female"?"سيدة":gender==="male"?"سيد":"";
   const greeting=honorific?`أهلاً بك ${honorific} ${displayName}`:`أهلاً بك ${displayName}`;
-  const doctorName=String(state.patient?.doctorName||payload.doctorName||"").trim();
-  const clinicName=String(state.patient?.clinicName||payload.clinicName||settings?.get("clinicName")||"عيادة د. طاهر").trim();
-  server?.setSession(state.patient?.sessionId||payload.sessionId||"");
-  server?.send({type:"patient",displayName,fullName,gender,honorific,greeting,doctorName,clinicName,sessionId:state.patient?.sessionId||"",...displayConfig()});
+  const doctorName=String((hasClinicalIdentity?active?.doctorName:payload.doctorName)||payload.doctorName||active?.doctorName||"").trim();
+  const clinicName=String((hasClinicalIdentity?active?.clinicName:payload.clinicName)||payload.clinicName||active?.clinicName||settings?.get("clinicName")||"عيادة د. طاهر").trim();
+  const sessionId=String(active?.sessionId||payload.sessionId||server?.sessionId||"");
+  if(hasClinicalIdentity)server?.setSession(sessionId);
+  server?.send({type:"patient",displayName,fullName,gender,honorific,greeting,doctorName,clinicName,sessionId,...displayConfig()});
   setDisplay({mode:"patient",imageVisible:false});disableViewerKeys();notice(`تم إرسال الترحيب: ${honorific?`${honorific} `:""}${displayName}`,"success");
   return true;
 }
@@ -417,7 +422,7 @@ function createWindow(){
     webPreferences:{preload:path.join(__dirname,"preload.js"),contextIsolation:true,nodeIntegration:false}
   });
   win.loadFile(path.join(__dirname,"..","renderer","index.html"));
-  clinicPane=new ClinicPane({window:win,url:settings.get('clinicWebUrl'),onToggle:()=>registerGlobalKeys(),onSession:value=>cloudQueue?.setSession(value),onCommand:handleCommand,onEvents:query=>{
+  clinicPane=new ClinicPane({window:win,url:settings.get('clinicWebUrl'),onToggle:()=>registerGlobalKeys(),onSession:value=>cloudQueue?.setSession(value),onCloudQueueAll:()=>{if(!cloudQueue)throw new Error('تعذر فتح طابور الرفع.');return cloudQueue.enqueueAllArchives(archive.root());},onCommand:handleCommand,onEvents:query=>{
     const current=archive.requirePatient();if(query.clinicId!==current.clinicId||query.patientId!==current.patientId)throw new Error('clinical_scope_mismatch');
     const batch=getClinicalEvents(query),events=batch.events||[],context=server.assistantContext;
     return {ok:true,events,journal:batch.journal,context:context?.patient?.clinicId===current.clinicId&&context?.patient?.patientId===current.patientId?context:null};

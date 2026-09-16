@@ -1,5 +1,5 @@
 const $=id=>document.getElementById(id);
-let timer,currentState={},shortcutDraft={},shortcutDirty=new Set();
+let timer,currentState={},shortcutDraft={},shortcutDirty=new Set(),renderedPatientIdentity="";
 let archiveReadVersion=0;
 function archiveScope(p=currentState.patient){return JSON.stringify([p?.clinicId,p?.patientId,p?.sessionId]);}
 let archiveCategory="all",archiveMode="plans",archiveSelected=null,archiveCompare=[],clinicalPlanData=null;
@@ -31,6 +31,25 @@ const shortcutMeta=[
 const defaultShortcuts=Object.fromEntries(shortcutMeta.map(([key,,value])=>[key,value]));
 
 function syncValue(id,value){const el=$(id);if(el&&document.activeElement!==el)el.value=value??""}
+function patientIdentity(patient={}){return patient?.selected?JSON.stringify([patient.clinicId||"",patient.patientId||"",patient.sessionId||""]):""}
+function syncPatientCard(patient={},settings={}){
+  const input=$("patient"),doctor=$("doctor"),nextIdentity=patientIdentity(patient),changed=nextIdentity!==renderedPatientIdentity;
+  if(patient?.selected){
+    const name=patient.fullName||patient.displayName||patient.firstName||"";
+    if(input&&(changed||document.activeElement!==input||!input.value.trim()))input.value=name;
+    const doctorName=patient.doctorName||settings.doctorName||"";
+    if(doctor&&(changed||document.activeElement!==doctor||!doctor.value.trim()))doctor.value=doctorName;
+    const gender=String(patient.gender||"").toLowerCase();
+    if(changed){
+      document.querySelectorAll('input[name="patientGender"]').forEach(radio=>{radio.checked=radio.value===gender;});
+    }
+  }else{
+    if(renderedPatientIdentity&&input)input.value="";
+    if(doctor&&document.activeElement!==doctor)doctor.value=settings.doctorName||"";
+    if(renderedPatientIdentity){const male=document.querySelector('input[name="patientGender"][value="male"]');if(male)male.checked=true;}
+  }
+  renderedPatientIdentity=nextIdentity;
+}
 function prettyShortcut(value){
   if(!value)return "معطّل";
   const map={CommandOrControl:"Ctrl",Left:"←",Right:"→",Up:"↑",Down:"↓",PageUp:"Page Up",PageDown:"Page Down",Escape:"Esc"};
@@ -64,8 +83,8 @@ function render(s){
   $("mode").textContent=labels[s.display?.mode]||s.display?.mode||"ترحيب";
   $("url").textContent=s.network?.wsUrl||"—";$("folder").textContent=s.settings?.sensorFolder||"—";
   if($("archiveRoot"))$("archiveRoot").textContent=s.patient?.archiveRoot||s.settings?.patientArchiveRoot||"مجلد المستندات الافتراضي";
-  if(s.patient?.selected){syncValue("patient",s.patient.displayName||s.patient.fullName||"");if(s.patient.doctorName)syncValue("doctor",s.patient.doctorName);}
-  $("current").textContent=s.images?.currentName||"—";syncValue("doctor",s.settings?.doctorName||"");
+  syncPatientCard(s.patient||{},s.settings||{});
+  $("current").textContent=s.images?.currentName||"—";
   ["chainName","displayTitle","clinicName","clinicDisplayName","homeEyebrow","specialty","welcomeText","comfortText","qrEventTitle","qrEventDescription","qrReminderMessage","qrReminderHours"].forEach(id=>syncValue(id,s.settings?.[id]??""));
   syncValue("clinicalPhrases",(s.settings?.clinicalPhrases||[]).join("\n"));
   syncValue("qrClinic",s.settings?.clinicName||"عيادة د. طاهر");
@@ -294,6 +313,8 @@ $("left").onclick=()=>chairAPI.transform({dx:-70,dy:0});$("right").onclick=()=>c
 $("black").onclick=()=>chairAPI.showBlack();$("home").onclick=()=>chairAPI.showHome();$("end").onclick=()=>chairAPI.endSession();$("game").onclick=()=>chairAPI.startGame();
 $("rotateImage").onclick=()=>chairAPI.rotateImage();
 $("showPatient").onclick=()=>chairAPI.showPatient({
+  manual:true,
+  fullName:$("patient").value,
   displayName:$("patient").value,
   doctorName:$("doctor").value,
   gender:document.querySelector('input[name="patientGender"]:checked')?.value||"male"
