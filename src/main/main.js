@@ -51,11 +51,26 @@ function withClinicalReplay(type,handler){
 
 function selectClinicalPatient(payload={}){
   const previousSession=server?.sessionId||'';
-  let context=contextFromCommand(payload);state.patient=archive?.select(context.patient)||{selected:false};context=archive?.reconcileAssistantContext(context)||context;
+  let context=contextFromCommand(payload);
+  const allowLegacyBind=payload?.allowLegacyBind===true;
+  // The confirmation flag is sent at command level by the clinic page.
+  // Forward it explicitly to PatientArchive.select; contextFromCommand() only
+  // contains the clinical patient payload and intentionally drops command-only flags.
+  state.patient=archive?.select({...context.patient,allowLegacyBind})||{selected:false};
+  context=archive?.reconcileAssistantContext(context)||context;
   context.patient={...context.patient,patientId:state.patient.patientId||context.patient.patientId,fileNo:state.patient.fileNo||context.patient.fileNo,fullName:state.patient.fullName||context.patient.fullName,firstName:state.patient.firstName||context.patient.firstName,sessionId:state.patient.sessionId||context.patient.sessionId};
   context.quickPhrases=[...(settings?.get("clinicalPhrases")||[])];
   state.clinical={...state.clinical,context,planCount:context.plans.length,updatedAt:new Date().toISOString()};
   archive?.saveAssistantContext(context);server?.setSession(context.patient.sessionId||"");
+  if(allowLegacyBind&&state.patient?.selected&&cloudQueue){
+    try{
+      const knownPlanIds=(context.plans||[]).map(plan=>String(plan.planId||plan.id||'')).filter(Boolean);
+      const queued=cloudQueue.enqueueArchive(state.patient,knownPlanIds);
+      notice(`تم ربط الأرشيف القديم بالمريض الحالي وإضافة ${queued.queued||0} ملفاً لطابور Drive${queued.existing?` (${queued.existing} موجود/مضاف مسبقاً)`:''}.`,'success');
+    }catch(error){
+      notice(`تم ربط الأرشيف القديم بنجاح، لكن تعذر إضافته لطابور Drive الآن: ${String(error?.message||error)}`,'warning');
+    }
+  }
   if(previousSession!==server?.sessionId)server?.send({type:'home',clearPatient:true,sessionId:context.patient.sessionId||''},{important:true,warn:false});
   server?.setAssistantContext(context);emit();return context;
 }
