@@ -25,7 +25,7 @@ test('embedded requests preserve failures, aborts and the boundaries of normal H
     const reply=await f.w.fetch('http://127.0.0.1:8765/command',{method:'POST',body:'{"action":"select_patient"}'});assert.equal(reply.status,400);assert.equal((await reply.json()).error,'archive_needs_review');
     const before=f.calls.length,abort=new AbortController();abort.abort();
     await assert.rejects(f.w.fetch('http://127.0.0.1:8765/command',{method:'POST',body:'{}',signal:abort.signal}),/abort/i);assert.equal(f.calls.length,before);
-    for(const url of ['https://clinic.invalid/api/dtdc/status','http://127.0.0.1:8765/media/file','http://127.0.0.1:9876/command','https://foreign.invalid/command'])await f.w.fetch(url);
+    for(const url of ['https://clinic.invalid/api/status','http://127.0.0.1:8765/media/file','http://127.0.0.1:9876/command','https://foreign.invalid/command'])await f.w.fetch(url);
     assert.equal(f.network.length,4);assert.equal(f.calls.length,before);
     assert.equal((await f.w.fetch('http://127.0.0.1:8765/health',{method:'DELETE'})).status,405);
   }finally{f.close();}

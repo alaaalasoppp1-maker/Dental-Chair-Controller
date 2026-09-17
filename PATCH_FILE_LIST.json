@@ -1,0 +1,18 @@
+[
+  "README_CLEAN_BUILD_AR.md",
+  "UPLOAD-TO-GITHUB_AR.txt",
+  "CHANGELOG_AR.md",
+  "package.json",
+  "package-lock.json",
+  "tests/archive-identity.test.js",
+  "tests/patient-card-sync.test.js",
+  "tests/cloud-queue.test.js",
+  "src/main/patient-archive.js",
+  "src/main/clinic-preload.js",
+  "src/main/main.js",
+  "src/main/cloud-queue.js",
+  "src/main/clinic-pane.js",
+  "src/renderer/clinical-studio.js",
+  "src/renderer/app.js",
+  "src/renderer/index.html"
+]

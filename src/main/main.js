@@ -16,12 +16,13 @@ const {CommandSessionGuard}=require("./command-session-guard");
 const {ClinicalEventJournal,requestIdentity}=require("./clinical-event-journal");
 const {ClinicPane}=require('./clinic-pane');
 const {CloudQueue}=require('./cloud-queue');
+const {GoogleLocalService}=require('./google-local');
 const {planRequest}=require('./clinic-pane-policy');
 const {contextFromCommand,normalizeAssistantSession,normalizeAssistantStage,CONTRACT_NAME,TRANSPORT_PROTOCOL}=require("../shared/clinical-contract");
 
 let win,tray,settings,images,server,discovery,archive,adbLink,quitting=false,currentMediaPath="";
 let pendingProtocolUrl=null;
-let clinicPane,cloudQueue,pendingPlanDetails=null;
+let clinicPane,cloudQueue,googleLocal,pendingPlanDetails=null;
 const state={settings:{},images:{},network:{},patient:{selected:false},clinical:{contract:CONTRACT_NAME,protocol:TRANSPORT_PROTOCOL,context:null,lastEventAt:0},display:{mode:"home",imageVisible:false}};
 let clinicalJournal;
 const commandSessionGuard=new CommandSessionGuard();
@@ -422,7 +423,7 @@ function createWindow(){
     webPreferences:{preload:path.join(__dirname,"preload.js"),contextIsolation:true,nodeIntegration:false}
   });
   win.loadFile(path.join(__dirname,"..","renderer","index.html"));
-  clinicPane=new ClinicPane({window:win,url:settings.get('clinicWebUrl'),onToggle:()=>registerGlobalKeys(),onSession:value=>cloudQueue?.setSession(value),onCloudQueueAll:()=>{if(!cloudQueue)throw new Error('تعذر فتح طابور الرفع.');return cloudQueue.enqueueAllArchives(archive.root());},onCommand:handleCommand,onEvents:query=>{
+  clinicPane=new ClinicPane({window:win,url:settings.get('clinicWebUrl'),google:googleLocal,cloudQueue,onToggle:()=>registerGlobalKeys(),onSession:value=>cloudQueue?.setSession(value),onCloudQueueAll:()=>{if(!cloudQueue)throw new Error('تعذر فتح طابور الرفع.');return cloudQueue.enqueueAllArchives(archive.root());},onCommand:handleCommand,onEvents:query=>{
     const current=archive.requirePatient();if(query.clinicId!==current.clinicId||query.patientId!==current.patientId)throw new Error('clinical_scope_mismatch');
     const batch=getClinicalEvents(query),events=batch.events||[],context=server.assistantContext;
     return {ok:true,events,journal:batch.journal,context:context?.patient?.clinicId===current.clinicId&&context?.patient?.patientId===current.patientId?context:null};
@@ -723,7 +724,7 @@ pendingProtocolUrl=findProtocolUrl(process.argv);
 
 app.whenReady().then(async()=>{
   settings=new SettingsStore(app);state.settings=settings.all();
-  try{cloudQueue=new CloudQueue({directory:app.getPath('userData'),origin:settings.get('clinicWebUrl'),onNotice:notice});}catch{dialog.showErrorBox('رفع الأرشيف معلّق','تعذر قراءة طابور الرفع السابق. بقيت الملفات الأصلية محفوظة. احتفظ بملف cloud-upload-queue.json للمراجعة.');}
+  try{googleLocal=new GoogleLocalService({directory:app.getPath('userData'),onNotice:notice});cloudQueue=new CloudQueue({directory:app.getPath('userData'),onNotice:notice,google:googleLocal});}catch{dialog.showErrorBox('رفع الأرشيف معلّق','تعذر قراءة طابور الرفع السابق. بقيت الملفات الأصلية محفوظة. احتفظ بملف cloud-upload-queue.json للمراجعة.');}
   try{clinicalJournal=new ClinicalEventJournal(path.join(app.getPath('userData'),'ClinicalEventJournal'))}catch{dialog.showErrorBox('تعذر فتح سجل المساعد','تعذر تجهيز الحفظ الدائم. تحقق من مساحة القرص وصلاحية مجلد التطبيق ثم أعد تشغيل الكونترولر.');app.quit();return;}
   archive=new PatientArchive({app,settings,onState:selected=>{state.patient=selected;emit();},onNotice:notice});
   state.patient=archive.snapshot();
