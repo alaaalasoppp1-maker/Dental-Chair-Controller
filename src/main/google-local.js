@@ -34,7 +34,13 @@ function fromFire(v){
   if(!v)return null;if('stringValue'in v)return v.stringValue;if('integerValue'in v)return Number(v.integerValue);if('doubleValue'in v)return v.doubleValue;if('booleanValue'in v)return v.booleanValue;if('nullValue'in v)return null;
   if(v.arrayValue)return (v.arrayValue.values||[]).map(fromFire);if(v.mapValue)return Object.fromEntries(Object.entries(v.mapValue.fields||{}).map(([k,x])=>[k,fromFire(x)]));return null;
 }
-function docData(doc){return doc?.fields?Object.fromEntries(Object.entries(doc.fields).map(([k,v])=>[k,fromFire(v)])):null;}
+function docData(doc){
+  if(!doc?.fields)return null;
+  const data=Object.fromEntries(Object.entries(doc.fields).map(([k,v])=>[k,fromFire(v)]));
+  const documentId=clean(doc.name).split('/').filter(Boolean).pop()||'';
+  if(documentId&&!data.id&&!data.patientId)data.id=documentId;
+  return data;
+}
 
 class GoogleLocalService{
   constructor({directory,onNotice=()=>{},fetchImpl=fetch,configFile}={}){
@@ -164,7 +170,22 @@ class GoogleLocalService{
   async gfetch(url,options={},retry=true){const token=await this.token();const r=await this.fetch(url,{...options,headers:{...(options.headers||{}),Authorization:`Bearer ${token}`},signal:options.signal||AbortSignal.timeout(65000)});if(r.status===401&&retry){this.access=null;return this.gfetch(url,options,false);}return r;}
   async json(url,options={}){const r=await this.gfetch(url,options);const data=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(new Error(`google_http_${r.status}`),{code:`google_http_${r.status}`,status:r.status,details:data});return data;}
   async testDrive(){const d=await this.json(`${DRIVE}/about?fields=user(displayName,emailAddress),storageQuota(limit,usage)`);this.meta.lastDriveTestAt=Date.now();this.persistMeta();return {ok:true,email:d.user?.emailAddress||this.meta.email||'',storageQuota:d.storageQuota||{}};}
-  async testPeople(){const d=await this.json(`${PEOPLE}/people/me?personFields=names,emailAddresses`);return {ok:true,resourceName:d.resourceName||'people/me'};}
+  async testPeople(){
+    // Test the exact Contacts permission the app actually uses. Calling people.get('people/me')
+    // can require profile-oriented scopes that DTDC intentionally does not request.
+    const q=new URLSearchParams({personFields:'names,phoneNumbers',pageSize:'1'});
+    try{
+      const d=await this.json(`${PEOPLE}/people/me/connections?${q}`);
+      return {ok:true,connections:Array.isArray(d.connections)?d.connections.length:0};
+    }catch(e){
+      const details=e?.details?.error?.details||[];
+      const reason=details.find(x=>x&&x.reason)?.reason||'';
+      const status=e?.details?.error?.status||'';
+      if(reason==='SERVICE_DISABLED')throw Object.assign(new Error('People API غير مفعلة على مشروع Google Cloud. فعّل People API ثم أعد الاختبار.'),{code:'google_people_api_disabled',status:e.status,details:e.details});
+      if(reason==='ACCESS_TOKEN_SCOPE_INSUFFICIENT'||status==='PERMISSION_DENIED')throw Object.assign(new Error('صلاحية Google Contacts غير موجودة في الربط الحالي. اضغط إعادة ربط Google ووافق على صلاحية جهات الاتصال ثم أعد الاختبار.'),{code:'google_contacts_scope_missing',status:e.status,details:e.details});
+      throw e;
+    }
+  }
   async testUpload(){const root=await this.ensureFolder('DTDC Patients','','root:v2'),body=Buffer.from('Dental Chain OS Google Drive connection test\n','utf8'),meta={name:'DTDC Connection Test.txt',parents:[root],appProperties:{dtdcKey:'connection-test'}};const boundary='dtdc_'+crypto.randomBytes(12).toString('hex'),payload=Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n`),body,Buffer.from(`\r\n--${boundary}--`)]);const r=await this.gfetch(`${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id,name,size`,{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`,'Content-Length':String(payload.length)},body:payload});const data=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(new Error(`google_http_${r.status}`),{code:`google_http_${r.status}`,status:r.status});return {ok:true,...data};}
   async findFolder(name,parent='',appKey=''){
     const q=["mimeType='application/vnd.google-apps.folder'","trashed=false",`name='${escapeDrive(name)}'`];if(parent)q.push(`'${escapeDrive(parent)}' in parents`);const u=new URL(`${DRIVE}/files`);u.searchParams.set('q',q.join(' and '));u.searchParams.set('spaces','drive');u.searchParams.set('fields','files(id,name,appProperties)');const data=await this.json(u);return (data.files||[]).find(f=>!appKey||f.appProperties?.dtdcKey===appKey)||null;

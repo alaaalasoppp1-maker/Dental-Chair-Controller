@@ -6,9 +6,9 @@ const {clinicURL,ownPage,externalURL}=require('./clinic-pane-policy');
 const {version:controllerVersion}=require('../../package.json');
 const edgeSwipeSource=fs.readFileSync(path.join(__dirname,'../shared/edge-swipe.js'),'utf8');
 class ClinicPane {
-  constructor({window,url,google=null,cloudQueue=null,onToggle=()=>{},onSession=()=>{},onCloudQueueAll=async()=>({queued:0}),onCommand=()=>{},onEvents=()=>{}}){
+  constructor({window,url,google=null,cloudQueue=null,onToggle=()=>{},onSession=()=>{},onCloudQueueAll=async()=>({queued:0}),onCloudMigrateIdentities=async()=>({migrated:0}),onCommand=()=>{},onEvents=()=>{}}){
     this.window=window;this.url=clinicURL(url);this.origin=new URL(this.url).origin;this.onToggle=onToggle;this.onSession=onSession;this.open=false;this.pendingPrompt=null;
-    this.onCommand=onCommand;this.onEvents=onEvents;this.onCloudQueueAll=onCloudQueueAll;this.google=google;this.cloudQueue=cloudQueue;this.bridgeReady=false;
+    this.onCommand=onCommand;this.onEvents=onEvents;this.onCloudQueueAll=onCloudQueueAll;this.onCloudMigrateIdentities=onCloudMigrateIdentities;this.google=google;this.cloudQueue=cloudQueue;this.bridgeReady=false;
     this.view=new WebContentsView({webPreferences:{preload:path.join(__dirname,'clinic-preload.js'),partition:'persist:dtdc-clinic',contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
     this.view.setBackgroundColor('#f4f8fc');
     const wc=this.view.webContents;
@@ -71,6 +71,7 @@ class ClinicPane {
     ipcMain.handle('clinic:external',(event,url)=>{if(!this.valid(event))throw new Error('sender_denied');return this.external(url);});
     ipcMain.handle('clinic:session',(event,payload)=>{if(!this.valid(event))throw new Error('sender_denied');this.onSession(payload);return true;});
     ipcMain.handle('clinic:cloud-queue-all',event=>{if(!this.valid(event))throw new Error('sender_denied');return this.onCloudQueueAll();});
+    ipcMain.handle('clinic:cloud-migrate-identities',event=>{if(!this.valid(event))throw new Error('sender_denied');return this.onCloudMigrateIdentities();});
     ipcMain.handle('clinic:google-status',event=>{if(!this.valid(event)||!this.google)throw new Error('sender_denied');return {...this.google.status(),uploadQueue:this.cloudQueue?.summary(this.google.session?.clinicId||'')?.count||0};});
     ipcMain.handle('clinic:google-connect',async event=>{
       if(!this.valid(event)||!this.google)throw new Error('sender_denied');

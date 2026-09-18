@@ -438,7 +438,7 @@ function createWindow(){
     webPreferences:{preload:path.join(__dirname,"preload.js"),contextIsolation:true,nodeIntegration:false}
   });
   win.loadFile(path.join(__dirname,"..","renderer","index.html"));
-  clinicPane=new ClinicPane({window:win,url:settings.get('clinicWebUrl'),google:googleLocal,cloudQueue,onToggle:()=>registerGlobalKeys(),onSession:value=>cloudQueue?.setSession(value),onCloudQueueAll:()=>{if(!cloudQueue)throw new Error('تعذر فتح طابور الرفع.');return cloudQueue.enqueueAllArchives(archive.root());},onCommand:handleCommand,onEvents:query=>{
+  clinicPane=new ClinicPane({window:win,url:settings.get('clinicWebUrl'),google:googleLocal,cloudQueue,onToggle:()=>registerGlobalKeys(),onSession:value=>cloudQueue?.setSession(value),onCloudQueueAll:()=>{if(!cloudQueue)throw new Error('تعذر فتح طابور الرفع.');return cloudQueue.enqueueAllArchives(archive.root());},onCloudMigrateIdentities:()=>{if(!cloudQueue)throw new Error('تعذر فتح الأرشيف المحلي.');return cloudQueue.migrateLegacyIdentities(archive.root());},onCommand:handleCommand,onEvents:query=>{
     const current=archive.requirePatient();if(query.clinicId!==current.clinicId||query.patientId!==current.patientId)throw new Error('clinical_scope_mismatch');
     const batch=getClinicalEvents(query),events=batch.events||[],context=server.assistantContext;
     return {ok:true,events,journal:batch.journal,context:context?.patient?.clinicId===current.clinicId&&context?.patient?.patientId===current.patientId?context:null};

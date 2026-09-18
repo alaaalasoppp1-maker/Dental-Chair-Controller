@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('DCOSController',Object.freeze({
   openExternal:url=>ipcRenderer.invoke('clinic:external',url),
   session:payload=>ipcRenderer.invoke('clinic:session',payload),
   queueAllCloudArchive:()=>ipcRenderer.invoke('clinic:cloud-queue-all'),
+  migrateLegacyArchiveIdentities:()=>ipcRenderer.invoke('clinic:cloud-migrate-identities'),
   googleStatus:()=>ipcRenderer.invoke('clinic:google-status'),
   googleConnect:()=>ipcRenderer.invoke('clinic:google-connect'),
   googleDisconnect:()=>ipcRenderer.invoke('clinic:google-disconnect'),
