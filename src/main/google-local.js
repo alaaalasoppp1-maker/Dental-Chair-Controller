@@ -65,18 +65,62 @@ class GoogleLocalService{
   async connect(){
     if(!this.clientId)throw Object.assign(new Error('google_client_id_missing'),{code:'google_client_id_missing'});
     const verifier=b64url(crypto.randomBytes(48)),challenge=b64url(crypto.createHash('sha256').update(verifier).digest()),state=b64url(crypto.randomBytes(24));
-    const result=await new Promise((resolve,reject)=>{
-      let done=false;const finish=(err,val)=>{if(done)return;done=true;clearTimeout(timer);try{server.close();}catch{}err?reject(err):resolve(val);};
-      const server=http.createServer((req,res)=>{
-        try{const u=new URL(req.url,'http://127.0.0.1');if(u.pathname!=='/oauth2/callback'){res.writeHead(404);res.end();return;}if(u.searchParams.get('state')!==state)throw Object.assign(new Error('oauth_state_mismatch'),{code:'oauth_state_mismatch'});if(u.searchParams.get('error'))throw Object.assign(new Error(u.searchParams.get('error')),{code:'google_consent_failed'});const code=u.searchParams.get('code');if(!code)throw new Error('oauth_code_missing');res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end('<!doctype html><meta charset="utf-8"><title>Dental Chain OS</title><body style="font-family:system-ui;direction:rtl;padding:40px"><h2>تم ربط Google بنجاح</h2><p>يمكنك إغلاق هذه الصفحة والعودة إلى Dental Chain Controller.</p></body>');finish(null,{code,redirect:`http://127.0.0.1:${server.address().port}/oauth2/callback`});}catch(e){res.writeHead(400,{'Content-Type':'text/plain; charset=utf-8'});res.end('OAuth failed. Return to Dental Chain Controller.');finish(e);}
+    let callbackResponse=null,server=null,timer=null;
+    const sendPage=(ok,message)=>{
+      const res=callbackResponse;if(!res||res.destroyed||res.writableEnded)return;
+      try{res.writeHead(ok?200:500,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(`<!doctype html><meta charset="utf-8"><title>Dental Chain OS</title><body style="font-family:system-ui;direction:rtl;padding:40px"><h2>${ok?'تم ربط Google بنجاح':'تعذر إكمال ربط Google'}</h2><p>${message}</p></body>`);}catch{}
+    };
+    const closeListener=()=>{if(timer)clearTimeout(timer);try{server?.close();}catch{}};
+    try{
+      const result=await new Promise((resolve,reject)=>{
+        let done=false;const finish=(err,val)=>{if(done)return;done=true;if(timer)clearTimeout(timer);err?reject(err):resolve(val);};
+        server=http.createServer((req,res)=>{
+          try{
+            const u=new URL(req.url,'http://127.0.0.1');
+            if(u.pathname!=='/'&&u.pathname!=='/oauth2/callback'){res.writeHead(404);res.end();return;}
+            if(u.searchParams.get('state')!==state)throw Object.assign(new Error('oauth_state_mismatch'),{code:'oauth_state_mismatch'});
+            if(u.searchParams.get('error'))throw Object.assign(new Error(u.searchParams.get('error')),{code:'google_consent_failed'});
+            const code=u.searchParams.get('code');if(!code)throw Object.assign(new Error('oauth_code_missing'),{code:'oauth_code_missing'});
+            callbackResponse=res;
+            // Keep this response open until token exchange + encrypted local persistence really succeed.
+            finish(null,{code,redirect:`http://127.0.0.1:${server.address().port}`});
+          }catch(e){
+            try{res.writeHead(400,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end('<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;direction:rtl;padding:40px"><h2>تعذر ربط Google</h2><p>ارجع إلى Dental Chain Controller وحاول مجدداً.</p></body>');}catch{}
+            finish(e);
+          }
+        });
+        server.on('error',e=>finish(Object.assign(e,{code:e.code||'oauth_listener_failed'})));
+        server.listen(0,'127.0.0.1',async()=>{
+          // Google documents the loopback redirect for Desktop apps as the loopback origin + random port.
+          const redirect=`http://127.0.0.1:${server.address().port}`;
+          const p=new URLSearchParams({client_id:this.clientId,redirect_uri:redirect,response_type:'code',scope:SCOPES.join(' '),state,code_challenge:challenge,code_challenge_method:'S256',access_type:'offline',prompt:'consent'});
+          if(this.expectedEmail)p.set('login_hint',this.expectedEmail);
+          try{await shell.openExternal(`${GOOGLE_AUTH}?${p}`);}catch(e){finish(e);}
+        });
+        timer=setTimeout(()=>finish(Object.assign(new Error('oauth_timeout'),{code:'oauth_timeout'})),180000);timer.unref?.();
       });
-      server.listen(0,'127.0.0.1',async()=>{const redirect=`http://127.0.0.1:${server.address().port}/oauth2/callback`;const p=new URLSearchParams({client_id:this.clientId,redirect_uri:redirect,response_type:'code',scope:SCOPES.join(' '),state,code_challenge:challenge,code_challenge_method:'S256',access_type:'offline',prompt:'consent'});if(this.expectedEmail)p.set('login_hint',this.expectedEmail);try{await shell.openExternal(`${GOOGLE_AUTH}?${p}`);}catch(e){finish(e);}});
-      const timer=setTimeout(()=>finish(Object.assign(new Error('oauth_timeout'),{code:'oauth_timeout'})),180000);timer.unref?.();
-    });
-    const body=new URLSearchParams({client_id:this.clientId,code:result.code,code_verifier:verifier,grant_type:'authorization_code',redirect_uri:result.redirect});
-    const r=await this.fetch(GOOGLE_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body,signal:AbortSignal.timeout(30000)});const data=await r.json().catch(()=>({}));if(!r.ok||!data.access_token)throw Object.assign(new Error('google_consent_failed'),{code:'google_consent_failed',status:r.status});
-    const infoR=await this.fetch('https://openidconnect.googleapis.com/v1/userinfo',{headers:{Authorization:`Bearer ${data.access_token}`},signal:AbortSignal.timeout(20000)});const info=await infoR.json().catch(()=>({}));if(!infoR.ok||!info.email)throw Object.assign(new Error('google_identity_failed'),{code:'google_identity_failed'});if(this.expectedEmail&&clean(info.email).toLowerCase()!==this.expectedEmail)throw Object.assign(new Error('wrong_google_account'),{code:'wrong_google_account'});if(!data.refresh_token)throw Object.assign(new Error('google_refresh_missing'),{code:'google_refresh_missing'});
-    this.saveRefresh(data.refresh_token);this.access={token:data.access_token,expiresAt:Date.now()+Math.max(60,Number(data.expires_in||3600)-60)*1000};this.meta={...this.meta,email:info.email,sub:info.sub||'',scopes:clean(data.scope).split(/\s+/).filter(Boolean),connectedAt:Date.now()};this.persistMeta();return this.status();
+      const body=new URLSearchParams({client_id:this.clientId,code:result.code,code_verifier:verifier,grant_type:'authorization_code',redirect_uri:result.redirect});
+      const r=await this.fetch(GOOGLE_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body,signal:AbortSignal.timeout(30000)});
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok||!data.access_token){const reason=clean(data.error)||`http_${r.status}`;throw Object.assign(new Error(`google_token_exchange_failed:${reason}`),{code:'google_token_exchange_failed',status:r.status,oauthError:reason});}
+      const infoR=await this.fetch('https://openidconnect.googleapis.com/v1/userinfo',{headers:{Authorization:`Bearer ${data.access_token}`},signal:AbortSignal.timeout(20000)});
+      const info=await infoR.json().catch(()=>({}));
+      if(!infoR.ok||!info.email)throw Object.assign(new Error('google_identity_failed'),{code:'google_identity_failed'});
+      if(this.expectedEmail&&clean(info.email).toLowerCase()!==this.expectedEmail)throw Object.assign(new Error('wrong_google_account'),{code:'wrong_google_account'});
+      if(!data.refresh_token)throw Object.assign(new Error('google_refresh_missing'),{code:'google_refresh_missing'});
+      this.saveRefresh(data.refresh_token);
+      this.access={token:data.access_token,expiresAt:Date.now()+Math.max(60,Number(data.expires_in||3600)-60)*1000};
+      this.meta={...this.meta,email:info.email,sub:info.sub||'',scopes:clean(data.scope).split(/\s+/).filter(Boolean),connectedAt:Date.now(),lastConnectError:'',lastConnectErrorAt:0};
+      this.persistMeta();
+      sendPage(true,`تم حفظ الربط محلياً ومشفراً لهذا الجهاز للحساب ${info.email}. يمكنك إغلاق هذه الصفحة والعودة إلى Dental Chain Controller.`);
+      return this.status();
+    }catch(e){
+      const code=e?.code||clean(e?.message)||'google_connect_failed';
+      this.meta={...this.meta,lastConnectError:code,lastConnectErrorAt:Date.now()};
+      try{this.persistMeta();}catch{}
+      sendPage(false,`لم يكتمل حفظ الربط على هذا الجهاز. رمز الخطأ: ${code}. ارجع إلى Dental Chain Controller.`);
+      throw e;
+    }finally{closeListener();}
   }
   disconnect(){this.access=null;for(const f of [this.tokenFile])try{fs.unlinkSync(f);}catch{}this.meta={contactsEnabled:false};this.persistMeta();return this.status();}
   async token(force=false){
