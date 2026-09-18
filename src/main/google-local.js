@@ -15,6 +15,7 @@ const clean=v=>String(v??'').trim();
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const b64url=b=>Buffer.from(b).toString('base64url');
 const escapeDrive=s=>String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+const escapeHtml=s=>String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]));
 
 function configFromFile(file){
   try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch{return{};}
@@ -38,7 +39,7 @@ function docData(doc){return doc?.fields?Object.fromEntries(Object.entries(doc.f
 class GoogleLocalService{
   constructor({directory,onNotice=()=>{},fetchImpl=fetch,configFile}={}){
     this.dir=directory;this.notice=onNotice;this.fetch=fetchImpl;this.configFile=configFile||path.join(__dirname,'../config/google-oauth.json');
-    this.tokenFile=path.join(directory,'google-oauth-token.bin');this.metaFile=path.join(directory,'google-oauth-meta.json');this.contactFile=path.join(directory,'google-contacts-queue.json');
+    this.tokenFile=path.join(directory,'google-oauth-token.bin');this.metaFile=path.join(directory,'google-oauth-meta.json');this.contactFile=path.join(directory,'google-contacts-queue.json');this.oauthDiagFile=path.join(directory,'google-oauth-last-error.json');
     this.access=null;this.session=null;this.generation=0;this.contactsRunning=false;
     const c=configFromFile(this.configFile),candidate=clean(c.desktopClientId||process.env.DTDC_GOOGLE_DESKTOP_CLIENT_ID);this.clientId=/^[0-9A-Za-z._-]+\.apps\.googleusercontent\.com$/.test(candidate)&&!/^PASTE_/i.test(candidate)?candidate:'';this.expectedEmail=clean(c.expectedEmail||'').toLowerCase();
     try{this.meta=JSON.parse(fs.readFileSync(this.metaFile,'utf8'));}catch{this.meta={contactsEnabled:false};}
@@ -100,9 +101,13 @@ class GoogleLocalService{
         timer=setTimeout(()=>finish(Object.assign(new Error('oauth_timeout'),{code:'oauth_timeout'})),180000);timer.unref?.();
       });
       const body=new URLSearchParams({client_id:this.clientId,code:result.code,code_verifier:verifier,grant_type:'authorization_code',redirect_uri:result.redirect});
-      const r=await this.fetch(GOOGLE_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body,signal:AbortSignal.timeout(30000)});
-      const data=await r.json().catch(()=>({}));
-      if(!r.ok||!data.access_token){const reason=clean(data.error)||`http_${r.status}`;throw Object.assign(new Error(`google_token_exchange_failed:${reason}`),{code:'google_token_exchange_failed',status:r.status,oauthError:reason});}
+      // Send an explicit form string. This avoids any Electron/Node fetch implementation ambiguity around URLSearchParams bodies.
+      const r=await this.fetch(GOOGLE_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8','Accept':'application/json'},body:body.toString(),signal:AbortSignal.timeout(30000)});
+      const raw=await r.text().catch(()=>''),data=(()=>{try{return raw?JSON.parse(raw):{};}catch{return{};}})();
+      if(!r.ok||!data.access_token){
+        const reason=clean(data.error)||`http_${r.status}`,description=clean(data.error_description)||clean(raw).slice(0,300)||'No description returned by Google';
+        throw Object.assign(new Error(`google_token_exchange_failed:${reason}:${description}`),{code:'google_token_exchange_failed',status:r.status,oauthError:reason,oauthDescription:description});
+      }
       const infoR=await this.fetch('https://openidconnect.googleapis.com/v1/userinfo',{headers:{Authorization:`Bearer ${data.access_token}`},signal:AbortSignal.timeout(20000)});
       const info=await infoR.json().catch(()=>({}));
       if(!infoR.ok||!info.email)throw Object.assign(new Error('google_identity_failed'),{code:'google_identity_failed'});
@@ -112,20 +117,27 @@ class GoogleLocalService{
       this.access={token:data.access_token,expiresAt:Date.now()+Math.max(60,Number(data.expires_in||3600)-60)*1000};
       this.meta={...this.meta,email:info.email,sub:info.sub||'',scopes:clean(data.scope).split(/\s+/).filter(Boolean),connectedAt:Date.now(),lastConnectError:'',lastConnectErrorAt:0};
       this.persistMeta();
+      try{fs.unlinkSync(this.oauthDiagFile);}catch{}
       sendPage(true,`تم حفظ الربط محلياً ومشفراً لهذا الجهاز للحساب ${info.email}. يمكنك إغلاق هذه الصفحة والعودة إلى Dental Chain Controller.`);
       return this.status();
     }catch(e){
       const code=e?.code||clean(e?.message)||'google_connect_failed';
-      this.meta={...this.meta,lastConnectError:code,lastConnectErrorAt:Date.now()};
+      const detail=clean(e?.oauthError),description=clean(e?.oauthDescription);
+      this.meta={...this.meta,lastConnectError:code,lastConnectErrorDetail:detail,lastConnectErrorDescription:description,lastConnectErrorAt:Date.now()};
       try{this.persistMeta();}catch{}
-      sendPage(false,`لم يكتمل حفظ الربط على هذا الجهاز. رمز الخطأ: ${code}. ارجع إلى Dental Chain Controller.`);
+      try{
+        fs.mkdirSync(this.dir,{recursive:true});
+        fs.writeFileSync(this.oauthDiagFile,JSON.stringify({at:new Date().toISOString(),code,status:Number(e?.status||0)||null,googleError:detail||null,googleDescription:description||null},null,2));
+      }catch{}
+      const extra=detail?`<br><b>Google:</b> ${escapeHtml(detail)}${description?` — ${escapeHtml(description)}`:''}`:'';
+      sendPage(false,`لم يكتمل حفظ الربط على هذا الجهاز.<br><b>رمز البرنامج:</b> ${escapeHtml(code)}${extra}<br><br>ارجع إلى Dental Chain Controller.`);
       throw e;
     }finally{closeListener();}
   }
   disconnect(){this.access=null;for(const f of [this.tokenFile])try{fs.unlinkSync(f);}catch{}this.meta={contactsEnabled:false};this.persistMeta();return this.status();}
   async token(force=false){
     if(!force&&this.access&&this.access.expiresAt>Date.now()+30000)return this.access.token;const refresh=this.encryptedRefresh();if(!refresh)throw Object.assign(new Error('google_not_connected'),{code:'google_not_connected'});
-    const body=new URLSearchParams({client_id:this.clientId,refresh_token:refresh,grant_type:'refresh_token'});const r=await this.fetch(GOOGLE_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body,signal:AbortSignal.timeout(30000)});const data=await r.json().catch(()=>({}));if(!r.ok||!data.access_token)throw Object.assign(new Error('google_reconnect_required'),{code:'google_reconnect_required',status:r.status});this.access={token:data.access_token,expiresAt:Date.now()+Math.max(60,Number(data.expires_in||3600)-60)*1000};return this.access.token;
+    const body=new URLSearchParams({client_id:this.clientId,refresh_token:refresh,grant_type:'refresh_token'});const r=await this.fetch(GOOGLE_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8','Accept':'application/json'},body:body.toString(),signal:AbortSignal.timeout(30000)});const data=await r.json().catch(()=>({}));if(!r.ok||!data.access_token)throw Object.assign(new Error('google_reconnect_required'),{code:'google_reconnect_required',status:r.status});this.access={token:data.access_token,expiresAt:Date.now()+Math.max(60,Number(data.expires_in||3600)-60)*1000};return this.access.token;
   }
   async gfetch(url,options={},retry=true){const token=await this.token();const r=await this.fetch(url,{...options,headers:{...(options.headers||{}),Authorization:`Bearer ${token}`},signal:options.signal||AbortSignal.timeout(65000)});if(r.status===401&&retry){this.access=null;return this.gfetch(url,options,false);}return r;}
   async json(url,options={}){const r=await this.gfetch(url,options);const data=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(new Error(`google_http_${r.status}`),{code:`google_http_${r.status}`,status:r.status,details:data});return data;}
