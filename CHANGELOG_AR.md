@@ -1,5 +1,14 @@
 # سجل تغييرات الكونترولر
 
+## الإصدار 3.7.4
+
+- إضافة دعم Client Secret لعميل Google Desktop عند مطالبة Google به في Token Exchange، مع إبقاء PKCE + loopback على `127.0.0.1`.
+- عدم وضع Client Secret في السورس أو Firebase: يُطلب مرة واحدة داخل نافذة محلية مقنّعة ثم يُحفظ مشفراً بواسطة Electron `safeStorage` في مجلد بيانات الكونترولر.
+- إرسال Client Secret في تبادل Authorization Code وكذلك عند تجديد Access Token من Refresh Token.
+- إذا رفض Google السر (`invalid_client` أو خطأ متعلق بـ `client_secret`) يُحذف السر المحلي المشفر تلقائياً كي يطلبه الكونترولر من جديد بالمحاولة التالية.
+- إضافة Desktop Client ID الظاهر في إعداد Google Cloud إلى `src/config/google-oauth.json` مع تثبيت البريد المتوقع `dr.taheralajaclinic@gmail.com`.
+- عدم تخزين Refresh Token أو Client Secret أو Access Token في Firestore/Firebase أو ملفات المصدر.
+
 ## الإصدار 3.7.1
 
 - إصلاح تكرار سؤال ربط الأرشيف القديم: كانت موافقة المستخدم تصل كـ `allowLegacyBind` على مستوى الأمر ثم تضيع قبل `PatientArchive.select()`، لذلك كان الكونترولر يعيد نفس الطلب كل مرة.

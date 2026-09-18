@@ -39,7 +39,7 @@ function docData(doc){return doc?.fields?Object.fromEntries(Object.entries(doc.f
 class GoogleLocalService{
   constructor({directory,onNotice=()=>{},fetchImpl=fetch,configFile}={}){
     this.dir=directory;this.notice=onNotice;this.fetch=fetchImpl;this.configFile=configFile||path.join(__dirname,'../config/google-oauth.json');
-    this.tokenFile=path.join(directory,'google-oauth-token.bin');this.metaFile=path.join(directory,'google-oauth-meta.json');this.contactFile=path.join(directory,'google-contacts-queue.json');this.oauthDiagFile=path.join(directory,'google-oauth-last-error.json');
+    this.tokenFile=path.join(directory,'google-oauth-token.bin');this.clientSecretFile=path.join(directory,'google-oauth-client-secret.bin');this.metaFile=path.join(directory,'google-oauth-meta.json');this.contactFile=path.join(directory,'google-contacts-queue.json');this.oauthDiagFile=path.join(directory,'google-oauth-last-error.json');
     this.access=null;this.session=null;this.generation=0;this.contactsRunning=false;
     const c=configFromFile(this.configFile),candidate=clean(c.desktopClientId||process.env.DTDC_GOOGLE_DESKTOP_CLIENT_ID);this.clientId=/^[0-9A-Za-z._-]+\.apps\.googleusercontent\.com$/.test(candidate)&&!/^PASTE_/i.test(candidate)?candidate:'';this.expectedEmail=clean(c.expectedEmail||'').toLowerCase();
     try{this.meta=JSON.parse(fs.readFileSync(this.metaFile,'utf8'));}catch{this.meta={contactsEnabled:false};}
@@ -62,9 +62,22 @@ class GoogleLocalService{
     if(!safeStorage.isEncryptionAvailable())throw Object.assign(new Error('safe_storage_unavailable'),{code:'safe_storage_unavailable'});
     fs.mkdirSync(this.dir,{recursive:true});const tmp=this.tokenFile+'.tmp';fs.writeFileSync(tmp,safeStorage.encryptString(token));fs.renameSync(tmp,this.tokenFile);
   }
-  status(){return {configured:!!this.clientId,connected:fs.existsSync(this.tokenFile)&&!!this.meta.email,email:this.meta.email||'',contactsEnabled:this.meta.contactsEnabled===true,lastContactSyncAt:this.meta.lastContactSyncAt||0,lastDriveTestAt:this.meta.lastDriveTestAt||0,contactQueue:this.contactRows.filter(r=>r.status!=='done').length,scopes:this.meta.scopes||[]};}
+  hasClientSecret(){return fs.existsSync(this.clientSecretFile);}
+  clientSecret(){
+    if(!fs.existsSync(this.clientSecretFile))return '';
+    if(!safeStorage.isEncryptionAvailable())throw Object.assign(new Error('safe_storage_unavailable'),{code:'safe_storage_unavailable'});
+    try{return safeStorage.decryptString(fs.readFileSync(this.clientSecretFile));}catch{throw Object.assign(new Error('google_client_secret_reenter_required'),{code:'google_client_secret_reenter_required'});}
+  }
+  saveClientSecret(secret){
+    const value=clean(secret);if(!value)throw Object.assign(new Error('google_client_secret_missing_local'),{code:'google_client_secret_missing_local'});
+    if(!safeStorage.isEncryptionAvailable())throw Object.assign(new Error('safe_storage_unavailable'),{code:'safe_storage_unavailable'});
+    fs.mkdirSync(this.dir,{recursive:true});const tmp=this.clientSecretFile+'.tmp';fs.writeFileSync(tmp,safeStorage.encryptString(value));fs.renameSync(tmp,this.clientSecretFile);return true;
+  }
+  clearClientSecret(){try{fs.unlinkSync(this.clientSecretFile);}catch{}return true;}
+  status(){return {configured:!!this.clientId,clientSecretConfigured:this.hasClientSecret(),connected:fs.existsSync(this.tokenFile)&&!!this.meta.email,email:this.meta.email||'',contactsEnabled:this.meta.contactsEnabled===true,lastContactSyncAt:this.meta.lastContactSyncAt||0,lastDriveTestAt:this.meta.lastDriveTestAt||0,contactQueue:this.contactRows.filter(r=>r.status!=='done').length,scopes:this.meta.scopes||[]};}
   async connect(){
     if(!this.clientId)throw Object.assign(new Error('google_client_id_missing'),{code:'google_client_id_missing'});
+    const clientSecret=this.clientSecret();if(!clientSecret)throw Object.assign(new Error('google_client_secret_missing_local'),{code:'google_client_secret_missing_local'});
     const verifier=b64url(crypto.randomBytes(48)),challenge=b64url(crypto.createHash('sha256').update(verifier).digest()),state=b64url(crypto.randomBytes(24));
     let callbackResponse=null,server=null,timer=null;
     const sendPage=(ok,message)=>{
@@ -100,7 +113,7 @@ class GoogleLocalService{
         });
         timer=setTimeout(()=>finish(Object.assign(new Error('oauth_timeout'),{code:'oauth_timeout'})),180000);timer.unref?.();
       });
-      const body=new URLSearchParams({client_id:this.clientId,code:result.code,code_verifier:verifier,grant_type:'authorization_code',redirect_uri:result.redirect});
+      const body=new URLSearchParams({client_id:this.clientId,client_secret:clientSecret,code:result.code,code_verifier:verifier,grant_type:'authorization_code',redirect_uri:result.redirect});
       // Send an explicit form string. This avoids any Electron/Node fetch implementation ambiguity around URLSearchParams bodies.
       const r=await this.fetch(GOOGLE_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8','Accept':'application/json'},body:body.toString(),signal:AbortSignal.timeout(30000)});
       const raw=await r.text().catch(()=>''),data=(()=>{try{return raw?JSON.parse(raw):{};}catch{return{};}})();
@@ -137,7 +150,16 @@ class GoogleLocalService{
   disconnect(){this.access=null;for(const f of [this.tokenFile])try{fs.unlinkSync(f);}catch{}this.meta={contactsEnabled:false};this.persistMeta();return this.status();}
   async token(force=false){
     if(!force&&this.access&&this.access.expiresAt>Date.now()+30000)return this.access.token;const refresh=this.encryptedRefresh();if(!refresh)throw Object.assign(new Error('google_not_connected'),{code:'google_not_connected'});
-    const body=new URLSearchParams({client_id:this.clientId,refresh_token:refresh,grant_type:'refresh_token'});const r=await this.fetch(GOOGLE_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8','Accept':'application/json'},body:body.toString(),signal:AbortSignal.timeout(30000)});const data=await r.json().catch(()=>({}));if(!r.ok||!data.access_token)throw Object.assign(new Error('google_reconnect_required'),{code:'google_reconnect_required',status:r.status});this.access={token:data.access_token,expiresAt:Date.now()+Math.max(60,Number(data.expires_in||3600)-60)*1000};return this.access.token;
+    const clientSecret=this.clientSecret();if(!clientSecret)throw Object.assign(new Error('google_client_secret_missing_local'),{code:'google_client_secret_missing_local'});
+    const body=new URLSearchParams({client_id:this.clientId,client_secret:clientSecret,refresh_token:refresh,grant_type:'refresh_token'});
+    const r=await this.fetch(GOOGLE_TOKEN,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8','Accept':'application/json'},body:body.toString(),signal:AbortSignal.timeout(30000)});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||!data.access_token){
+      const detail=`${clean(data.error)} ${clean(data.error_description)}`;
+      if(/invalid_client|client_secret/i.test(detail)){this.clearClientSecret();throw Object.assign(new Error('google_client_secret_reenter_required'),{code:'google_client_secret_reenter_required',status:r.status});}
+      throw Object.assign(new Error('google_reconnect_required'),{code:'google_reconnect_required',status:r.status});
+    }
+    this.access={token:data.access_token,expiresAt:Date.now()+Math.max(60,Number(data.expires_in||3600)-60)*1000};return this.access.token;
   }
   async gfetch(url,options={},retry=true){const token=await this.token();const r=await this.fetch(url,{...options,headers:{...(options.headers||{}),Authorization:`Bearer ${token}`},signal:options.signal||AbortSignal.timeout(65000)});if(r.status===401&&retry){this.access=null;return this.gfetch(url,options,false);}return r;}
   async json(url,options={}){const r=await this.gfetch(url,options);const data=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(new Error(`google_http_${r.status}`),{code:`google_http_${r.status}`,status:r.status,details:data});return data;}

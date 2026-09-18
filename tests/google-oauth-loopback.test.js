@@ -47,12 +47,14 @@ test('Desktop OAuth uses root loopback redirect and only reports browser success
       const body=String(options.body);
       assert.match(body,/redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A\d+(?:&|$)/);
       assert.doesNotMatch(body,/oauth2%2Fcallback/);
+      assert.match(body,/client_secret=desktop-client-secret/);
       return jsonResponse(200,{access_token:'access',refresh_token:'refresh',expires_in:3600,scope:'openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/contacts'});
     }
     if(String(url).includes('openidconnect.googleapis.com'))return jsonResponse(200,{email:'dr.taheralajaclinic@gmail.com',sub:'sub1'});
     throw new Error('unexpected_fetch:'+url);
   };
   const g=new GoogleLocalService({directory:dir,configFile:cfg,fetchImpl});
+  g.saveClientSecret('desktop-client-secret');
   const result=await g.connect();
   for(let i=0;i<20&&!callbackHtml;i++)await new Promise(r=>setTimeout(r,5));
   assert.match(openedRedirect,/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -79,8 +81,10 @@ test('token exchange failure exposes Google sub-error without persisting secrets
     throw new Error('unexpected_fetch:'+url);
   };
   const g=new GoogleLocalService({directory:dir,configFile:cfg,fetchImpl});
+  g.saveClientSecret('desktop-client-secret');
   await assert.rejects(()=>g.connect(),e=>e&&e.code==='google_token_exchange_failed'&&e.oauthError==='invalid_grant'&&e.oauthDescription==='Missing code verifier');
   assert.match(seenBody,/code_verifier=[A-Za-z0-9_-]{43,128}/);
+  assert.match(seenBody,/client_secret=desktop-client-secret/);
   for(let i=0;i<30&&!callbackHtml;i++)await new Promise(r=>setTimeout(r,5));
   assert.match(callbackHtml,/invalid_grant/);
   assert.match(callbackHtml,/Missing code verifier/);
@@ -89,4 +93,16 @@ test('token exchange failure exposes Google sub-error without persisting secrets
   assert.equal(diag.googleDescription,'Missing code verifier');
   const rawDiag=fs.readFileSync(g.oauthDiagFile,'utf8');
   assert.doesNotMatch(rawDiag,/test-code|code_verifier|access_token|refresh_token/);
+});
+
+
+test('connect fails locally before opening browser when the encrypted Desktop client secret is missing',async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dtdc-oauth-secret-missing-'));
+  const cfg=path.join(dir,'oauth.json');
+  fs.writeFileSync(cfg,JSON.stringify({desktopClientId:'1234567890-abc.apps.googleusercontent.com'}));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  openedRedirect='';callbackHtml='';
+  const g=new GoogleLocalService({directory:dir,configFile:cfg,fetchImpl:async()=>{throw new Error('must_not_fetch');}});
+  await assert.rejects(()=>g.connect(),e=>e&&e.code==='google_client_secret_missing_local');
+  assert.equal(openedRedirect,'');
 });

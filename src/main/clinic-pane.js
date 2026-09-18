@@ -43,6 +43,19 @@ class ClinicPane {
   async external(url){return shell.openExternal(externalURL(url));}
   async print(){if(ownPage(this.view.webContents.getURL(),this.origin))this.view.webContents.print({printBackground:true},()=>{});}
   async savePage(){const choice=await dialog.showSaveDialog(this.window,{title:'حفظ الصفحة',defaultPath:'clinic-page.html',filters:[{name:'HTML',extensions:['html']}]});if(!choice.canceled&&choice.filePath)await this.view.webContents.savePage(choice.filePath,'HTMLComplete');}
+  async requestGoogleClientSecret(){
+    if(this.pendingPrompt)throw Object.assign(new Error('prompt_busy'),{code:'prompt_busy'});
+    const child=new BrowserWindow({parent:this.window,modal:true,width:620,height:320,resizable:false,show:false,autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'prompt-preload.js'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
+    this.pendingPrompt=child;
+    return new Promise(resolve=>{
+      let answered=false;
+      const finish=value=>{if(answered)return;answered=true;this.pendingPrompt=null;ipcMain.removeListener('clinic-prompt:answer',answer);if(!child.isDestroyed())child.close();resolve(value===null?null:String(value).trim().slice(0,10000));};
+      const answer=(e,text)=>{if(e.sender===child.webContents)finish(text===null?null:text);};
+      ipcMain.on('clinic-prompt:answer',answer);child.once('closed',()=>finish(null));
+      child.webContents.once('did-finish-load',()=>{child.webContents.send('clinic-prompt:data',{message:'ألصق Google Desktop Client Secret كاملاً من Google Cloud.\n\nهذه القيمة تُحفظ مشفّرة محلياً على هذا الكمبيوتر بواسطة Electron safeStorage، ولا تُرسل إلى Firebase أو Firestore ولا تُكتب في السورس.\n\nلا تكتب النجوم الظاهرة في Google Cloud؛ استخدم زر النسخ بجانب Client secret للصق القيمة الكاملة.',value:'',secret:true});child.show();});
+      child.loadFile(path.join(__dirname,'..','renderer','prompt.html'));
+    });
+  }
   installIPC(){
     ipcMain.handle('clinic:health',event=>{if(!this.valid(event))throw new Error('sender_denied');return {ok:true,product:'DentalChairController',protocol:5,controllerVersion,transport:'embedded'};});
     ipcMain.handle('clinic:command',async(event,payload)=>{
@@ -59,7 +72,19 @@ class ClinicPane {
     ipcMain.handle('clinic:session',(event,payload)=>{if(!this.valid(event))throw new Error('sender_denied');this.onSession(payload);return true;});
     ipcMain.handle('clinic:cloud-queue-all',event=>{if(!this.valid(event))throw new Error('sender_denied');return this.onCloudQueueAll();});
     ipcMain.handle('clinic:google-status',event=>{if(!this.valid(event)||!this.google)throw new Error('sender_denied');return {...this.google.status(),uploadQueue:this.cloudQueue?.summary(this.google.session?.clinicId||'')?.count||0};});
-    ipcMain.handle('clinic:google-connect',event=>{if(!this.valid(event)||!this.google)throw new Error('sender_denied');return this.google.connect();});
+    ipcMain.handle('clinic:google-connect',async event=>{
+      if(!this.valid(event)||!this.google)throw new Error('sender_denied');
+      if(!this.google.hasClientSecret()){
+        const secret=await this.requestGoogleClientSecret();
+        if(!secret)throw Object.assign(new Error('google_client_secret_entry_cancelled'),{code:'google_client_secret_entry_cancelled'});
+        this.google.saveClientSecret(secret);
+      }
+      try{return await this.google.connect();}catch(error){
+        const detail=String(error?.oauthError||'')+' '+String(error?.oauthDescription||'');
+        if(/invalid_client|client_secret/i.test(detail))this.google.clearClientSecret();
+        throw error;
+      }
+    });
     ipcMain.handle('clinic:google-disconnect',event=>{if(!this.valid(event)||!this.google)throw new Error('sender_denied');return this.google.disconnect();});
     ipcMain.handle('clinic:google-test-drive',event=>{if(!this.valid(event)||!this.google)throw new Error('sender_denied');return this.google.testDrive();});
     ipcMain.handle('clinic:google-test-people',event=>{if(!this.valid(event)||!this.google)throw new Error('sender_denied');return this.google.testPeople();});
